@@ -107,6 +107,10 @@ public struct TerminalOptions {
     /// Initial state for terminal-wg left and right arrow swapping. The default
     /// is false, so the host or terminal application must opt in.
     public var initialBidiArrowKeySwap: Bool
+    /// When true, saves the alternate screen content to the normal buffer's scrollback
+    /// upon exiting alternate screen mode (similar to iTerm2's "Save lines to scrollback
+    /// in alternate screen mode"). The cursor is repositioned to the bottom of the viewport.
+    public var saveAlternateScreenToScrollback: Bool
 
     /// Default options
     public static let `default` = TerminalOptions.init(cols: 80,
@@ -123,14 +127,16 @@ public struct TerminalOptions {
                                                        regionalIndicatorWidth: .wide,
                                                        initialBidiState: .default,
                                                        maximumBidiParagraphRows: 500,
-                                                       initialBidiArrowKeySwap: false)
+                                                       initialBidiArrowKeySwap: false,
+                                                       saveAlternateScreenToScrollback: false)
 
   public init(cols: Int = Self.default.cols, rows: Int = Self.default.rows, convertEol: Bool = Self.default.convertEol, termName: String = Self.default.termName, cursorStyle: CursorStyle = Self.default.cursorStyle, screenReaderMode: Bool = Self.default.screenReaderMode, scrollback: Int = Self.default.scrollback, tabStopWidth: Int = Self.default.tabStopWidth,
               enableSixelReported: Bool = Self.default.enableSixelReported, kittyImageCacheLimitBytes: Int = Self.default.kittyImageCacheLimitBytes, ansi256PaletteStrategy: Ansi256PaletteStrategy = Self.default.ansi256PaletteStrategy,
               regionalIndicatorWidth: RegionalIndicatorWidth = Self.default.regionalIndicatorWidth,
               initialBidiState: BidiPresentationState = Self.default.initialBidiState,
               maximumBidiParagraphRows: Int = Self.default.maximumBidiParagraphRows,
-              initialBidiArrowKeySwap: Bool = Self.default.initialBidiArrowKeySwap) {
+              initialBidiArrowKeySwap: Bool = Self.default.initialBidiArrowKeySwap,
+              saveAlternateScreenToScrollback: Bool = Self.default.saveAlternateScreenToScrollback) {
         self.cols = cols
         self.rows = rows
         self.convertEol = convertEol
@@ -146,5 +152,6 @@ public struct TerminalOptions {
         self.initialBidiState = initialBidiState
         self.maximumBidiParagraphRows = max(1, maximumBidiParagraphRows)
         self.initialBidiArrowKeySwap = initialBidiArrowKeySwap
+        self.saveAlternateScreenToScrollback = saveAlternateScreenToScrollback
     }
 }

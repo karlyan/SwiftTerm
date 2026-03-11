@@ -77,6 +77,10 @@ public struct TerminalOptions {
     /// Width for individual Regional Indicator symbols. `.wide` (default) preserves existing
     /// behavior. `.narrow` matches system wcwidth() and avoids cursor divergence with tmux.
     public var regionalIndicatorWidth: RegionalIndicatorWidth
+    /// When true, saves the alternate screen content to the normal buffer's scrollback
+    /// upon exiting alternate screen mode (similar to iTerm2's "Save lines to scrollback
+    /// in alternate screen mode"). The cursor is repositioned to the bottom of the viewport.
+    public var saveAlternateScreenToScrollback: Bool
 
     /// Default options
     public static let `default` = TerminalOptions.init(cols: 80,
@@ -90,11 +94,12 @@ public struct TerminalOptions {
                                                        enableSixelReported: true,
                                                        kittyImageCacheLimitBytes: 320 * 1024 * 1024,
                                                        ansi256PaletteStrategy: .base16Lab,
-                                                       regionalIndicatorWidth: .wide)
+                                                       regionalIndicatorWidth: .wide,
+                                                       saveAlternateScreenToScrollback: false)
 
   public init(cols: Int = Self.default.cols, rows: Int = Self.default.rows, convertEol: Bool = Self.default.convertEol, termName: String = Self.default.termName, cursorStyle: CursorStyle = Self.default.cursorStyle, screenReaderMode: Bool = Self.default.screenReaderMode, scrollback: Int = Self.default.scrollback, tabStopWidth: Int = Self.default.tabStopWidth,
               enableSixelReported: Bool = Self.default.enableSixelReported, kittyImageCacheLimitBytes: Int = Self.default.kittyImageCacheLimitBytes, ansi256PaletteStrategy: Ansi256PaletteStrategy = Self.default.ansi256PaletteStrategy,
-              regionalIndicatorWidth: RegionalIndicatorWidth = Self.default.regionalIndicatorWidth) {
+              regionalIndicatorWidth: RegionalIndicatorWidth = Self.default.regionalIndicatorWidth, saveAlternateScreenToScrollback: Bool = Self.default.saveAlternateScreenToScrollback) {
         self.cols = cols
         self.rows = rows
         self.convertEol = convertEol
@@ -107,5 +112,6 @@ public struct TerminalOptions {
         self.kittyImageCacheLimitBytes = kittyImageCacheLimitBytes
         self.ansi256PaletteStrategy = ansi256PaletteStrategy
         self.regionalIndicatorWidth = regionalIndicatorWidth
+        self.saveAlternateScreenToScrollback = saveAlternateScreenToScrollback
     }
 }

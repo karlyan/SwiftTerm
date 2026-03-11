@@ -772,18 +772,74 @@ open class Terminal {
         if buffer === normalBuffer {
             return
         }
-        normalBuffer.x = altBuffer.x
-        normalBuffer.y = altBuffer.y
-        
+
+        if options.saveAlternateScreenToScrollback && normalBuffer.hasScrollback {
+            saveAlternateScreenToScrollback()
+        } else {
+            normalBuffer.x = altBuffer.x
+            normalBuffer.y = altBuffer.y
+        }
+
         // The alt buffer should always be cleared when we switch to the normal
         // buffer. This frees up memory since the alt buffer should always be new
         // when activated.
-        
+
         if clearAlt {
             clearKittyImages(in: altBuffer, isAlternateBuffer: true)
             altBuffer.clear ()
         }
         buffer = normalBuffer
+    }
+
+    /// Saves the alternate screen content to the normal buffer's scrollback,
+    /// similar to iTerm2's "Save lines to scrollback in alternate screen mode".
+    /// After this, the viewport contains blank lines and the cursor is at the bottom.
+    private func saveAlternateScreenToScrollback() {
+        let normalLines = normalBuffer.lines
+        let altLines = altBuffer.lines
+
+        // Find last non-empty row in alt buffer to avoid saving trailing blanks
+        var lastContentRow = rows - 1
+        while lastContentRow >= 0 && !altLines[altBuffer.yBase + lastContentRow].hasAnyContent() {
+            lastContentRow -= 1
+        }
+
+        let lineCount = max(lastContentRow + 1, 0)
+
+        // Push alt screen lines into normal buffer (they become scrollback)
+        for i in 0..<lineCount {
+            let altLine = altLines[altBuffer.yBase + i]
+            let willTrim = normalLines.isFull
+            normalLines.push(BufferLine(from: altLine))
+
+            if !willTrim {
+                normalBuffer.yBase += 1
+                normalBuffer.yDisp += 1
+            } else if normalBuffer.hasScrollback {
+                normalBuffer.linesTop += 1
+            }
+        }
+
+        // Push blank lines to form a clean viewport
+        let ea = eraseAttr()
+        for _ in 0..<rows {
+            let willTrim = normalLines.isFull
+            normalLines.push(normalBuffer.getBlankLine(attribute: ea))
+
+            if !willTrim {
+                normalBuffer.yBase += 1
+                normalBuffer.yDisp += 1
+            } else if normalBuffer.hasScrollback {
+                normalBuffer.linesTop += 1
+            }
+        }
+
+        // Cursor at bottom of viewport; override savedY so cmdRestoreCursor
+        // won't move it back to the old position
+        normalBuffer.y = rows - 1
+        normalBuffer.x = 0
+        normalBuffer.savedY = rows - 1
+        normalBuffer.savedX = 0
     }
     
     private func activateAltBuffer(fillAttr: Attribute?) {

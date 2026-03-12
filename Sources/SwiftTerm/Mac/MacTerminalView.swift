@@ -962,6 +962,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     public override func doCommand(by selector: Selector) {
+        // Clear IME marked text on any command (Esc, Enter, etc.)
+        if markedTextContent != nil {
+            markedTextContent = nil
+            kittyIsComposing = false
+            caretView?.isHidden = false
+            needsDisplay = true
+        }
         if !terminal.keyboardEnhancementFlags.isEmpty {
             switch selector {
             case #selector(insertNewline(_:)):

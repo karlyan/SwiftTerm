@@ -538,7 +538,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         drawMarkedText(context: currentContext)
     }
 
-    /// Draws the input method composing text (marked text) at the cursor position.
+    /// Draws the input method composing text (marked text) at the cursor position
+    /// with a yellow caret at the end, matching iTerm2 behavior.
     private func drawMarkedText(context: CGContext) {
         guard let marked = markedTextContent, marked.length > 0 else { return }
 
@@ -546,7 +547,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         let cursorX = CGFloat(buffer.x) * cellDimension.width
         let cursorY = frame.height - cellDimension.height * CGFloat(buffer.y - (buffer.yDisp - buffer.yBase) + 1)
 
-        // Build attributed string with terminal font and underline
+        // Build attributed string with terminal font and white underline
         let text = NSMutableAttributedString(string: marked.string, attributes: [
             .font: fontSet.normal,
             .foregroundColor: nativeForegroundColor,
@@ -555,8 +556,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         ])
 
         let textSize = text.size()
-        let padding: CGFloat = 2
-        let bgRect = CGRect(x: cursorX, y: cursorY, width: textSize.width + padding * 2, height: cellDimension.height)
+        let bgRect = CGRect(x: cursorX, y: cursorY, width: textSize.width, height: cellDimension.height)
 
         // Draw background
         context.saveGState()
@@ -564,9 +564,17 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         context.fill([bgRect])
         context.restoreGState()
 
-        // Draw text
-        let textOrigin = CGPoint(x: cursorX + padding, y: cursorY + (cellDimension.height - textSize.height) / 2)
+        // Draw composing text
+        let textOrigin = CGPoint(x: cursorX, y: cursorY + (cellDimension.height - textSize.height) / 2)
         text.draw(at: textOrigin)
+
+        // Draw yellow caret at the end of marked text
+        let caretX = cursorX + textSize.width
+        let caretRect = CGRect(x: caretX, y: cursorY, width: 2, height: cellDimension.height)
+        context.saveGState()
+        context.setFillColor(NSColor.yellow.cgColor)
+        context.fill([caretRect])
+        context.restoreGState()
     }
     
     public override func cursorUpdate(with event: NSEvent)
@@ -1062,6 +1070,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     func insertText(_ string: Any, replacementRange: NSRange, isPaste: Bool) {
         markedTextContent = nil
+        caretView?.isHidden = false
         if let str = string as? NSString {
             if !terminal.keyboardEnhancementFlags.isEmpty {
                 if isPaste, terminal.bracketedPasteMode {
@@ -1108,6 +1117,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         } else {
             markedTextContent = nil
         }
+        caretView?.isHidden = markedTextContent != nil
         needsDisplay = true
     }
 
@@ -1483,6 +1493,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     open func unmarkText() {
         kittyIsComposing = false
         markedTextContent = nil
+        caretView?.isHidden = false
+        updateCursorPosition()
         needsDisplay = true
     }
     

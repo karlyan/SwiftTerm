@@ -535,6 +535,38 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             return
         }
         drawTerminalContents (dirtyRect: dirtyRect, context: currentContext, bufferOffset: terminal.displayBuffer.yDisp)
+        drawMarkedText(context: currentContext)
+    }
+
+    /// Draws the input method composing text (marked text) at the cursor position.
+    private func drawMarkedText(context: CGContext) {
+        guard let marked = markedTextContent, marked.length > 0 else { return }
+
+        let buffer = terminal.displayBuffer
+        let cursorX = CGFloat(buffer.x) * cellDimension.width
+        let cursorY = frame.height - cellDimension.height * CGFloat(buffer.y - (buffer.yDisp - buffer.yBase) + 1)
+
+        // Build attributed string with terminal font and underline
+        let text = NSMutableAttributedString(string: marked.string, attributes: [
+            .font: fontSet.normal,
+            .foregroundColor: nativeForegroundColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .underlineColor: nativeForegroundColor,
+        ])
+
+        let textSize = text.size()
+        let padding: CGFloat = 2
+        let bgRect = CGRect(x: cursorX, y: cursorY, width: textSize.width + padding * 2, height: cellDimension.height)
+
+        // Draw background
+        context.saveGState()
+        nativeBackgroundColor.setFill()
+        context.fill([bgRect])
+        context.restoreGState()
+
+        // Draw text
+        let textOrigin = CGPoint(x: cursorX + padding, y: cursorY + (cellDimension.height - textSize.height) / 2)
+        text.draw(at: textOrigin)
     }
     
     public override func cursorUpdate(with event: NSEvent)
@@ -755,6 +787,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     private var pendingKittyKeyEvent: PendingKittyKeyEvent?
     private var kittyIsComposing = false
+    private var markedTextContent: NSAttributedString?
     
     //
     // We capture a handful of keydown events and pre-process those, and then let
@@ -1028,6 +1061,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     func insertText(_ string: Any, replacementRange: NSRange, isPaste: Bool) {
+        markedTextContent = nil
         if let str = string as? NSString {
             if !terminal.keyboardEnhancementFlags.isEmpty {
                 if isPaste, terminal.bracketedPasteMode {
@@ -1067,6 +1101,14 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // NSTextInputClient protocol implementation
     open func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         kittyIsComposing = true
+        if let str = string as? NSAttributedString {
+            markedTextContent = str.length > 0 ? str : nil
+        } else if let str = string as? String {
+            markedTextContent = str.isEmpty ? nil : NSAttributedString(string: str)
+        } else {
+            markedTextContent = nil
+        }
+        needsDisplay = true
     }
 
     private func kittyEncoder() -> KittyKeyboardEncoder {
@@ -1440,6 +1482,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // NSTextInputClient protocol implementation
     open func unmarkText() {
         kittyIsComposing = false
+        markedTextContent = nil
+        needsDisplay = true
     }
     
     // NSTextInputClient protocol implementation
@@ -1472,9 +1516,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func hasMarkedText() -> Bool {
-        // print ("hasMarkedText: This should return the actual range from the selection")
-        // TODO
-        return false
+        return markedTextContent != nil
     }
     
     // NSTextInputClient protocol implementation

@@ -796,6 +796,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     private var pendingKittyKeyEvent: PendingKittyKeyEvent?
     private var kittyIsComposing = false
     private var markedTextContent: NSAttributedString?
+    private var markedTextRefreshed = false
     
     //
     // We capture a handful of keydown events and pre-process those, and then let
@@ -845,7 +846,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             }
 
             pendingKittyKeyEvent = PendingKittyKeyEvent(event: event, eventType: textEventType)
+            let wasComposing = markedTextContent != nil
+            markedTextRefreshed = false
             interpretKeyEvents([event])
+            if wasComposing && !markedTextRefreshed && markedTextContent != nil {
+                markedTextContent = nil
+                kittyIsComposing = false
+                caretView?.isHidden = false
+                needsDisplay = true
+            }
             return
         }
         
@@ -933,14 +942,30 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
                     case NSPageDownFunctionKey:
                         pageDown()
                     default:
+                        let wasComposing = markedTextContent != nil
+                        markedTextRefreshed = false
                         interpretKeyEvents([event])
+                        if wasComposing && !markedTextRefreshed && markedTextContent != nil {
+                            markedTextContent = nil
+                            kittyIsComposing = false
+                            caretView?.isHidden = false
+                            needsDisplay = true
+                        }
                     }
                 }
             }
             return
         }
-        
+
+        let wasComposing = markedTextContent != nil
+        markedTextRefreshed = false
         interpretKeyEvents([event])
+        if wasComposing && !markedTextRefreshed && markedTextContent != nil {
+            markedTextContent = nil
+            kittyIsComposing = false
+            caretView?.isHidden = false
+            needsDisplay = true
+        }
     }
 
     public override func keyUp(with event: NSEvent) {
@@ -1117,6 +1142,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // NSTextInputClient protocol implementation
     open func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         kittyIsComposing = true
+        markedTextRefreshed = true
         if let str = string as? NSAttributedString {
             markedTextContent = str.length > 0 ? str : nil
         } else if let str = string as? String {

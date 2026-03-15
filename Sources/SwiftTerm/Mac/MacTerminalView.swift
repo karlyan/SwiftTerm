@@ -104,6 +104,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     var selection: SelectionService!
     private var scroller: NSScroller!
+    private var scrollAccumulator: CGFloat = 0
     
     // Attribute dictionary, maps a console attribute (color, flags) to the corresponding dictionary
     // of attributes for an NSAttributedString
@@ -2091,17 +2092,33 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     public override func scrollWheel(with event: NSEvent) {
-        if event.deltaY == 0 {
-            return
-        }
-        let velocity = calcScrollingVelocity(delta: Int (abs (event.deltaY)))
-        if event.deltaY > 0 {
-            scrollUp (lines: velocity)
+        if event.deltaY == 0 { return }
+
+        if event.hasPreciseScrollingDeltas {
+            // Trackpad: accumulate fractional delta, convert pixels to lines
+            let lineHeight = CGFloat(cellDimension.height)
+            scrollAccumulator += event.scrollingDeltaY / lineHeight
+            let lines = Int(scrollAccumulator)
+            if lines != 0 {
+                scrollAccumulator -= CGFloat(lines)
+                if lines > 0 {
+                    scrollUp(lines: abs(lines))
+                } else {
+                    scrollDown(lines: abs(lines))
+                }
+            }
         } else {
-            scrollDown(lines: velocity)
+            // Mouse scroll wheel: 3 lines per notch
+            let lines = max(1, Int(round(abs(event.deltaY)))) * 3
+            if event.deltaY > 0 {
+                scrollUp(lines: lines)
+            } else {
+                scrollDown(lines: lines)
+            }
         }
     }
-    
+
+    // Used by auto-scroll during selection drag (not scroll wheel)
     private func calcScrollingVelocity (delta: Int) -> Int
     {
         if delta > 9 {

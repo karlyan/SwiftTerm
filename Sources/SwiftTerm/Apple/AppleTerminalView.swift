@@ -1717,8 +1717,10 @@ extension TerminalView {
     func feedPrepare()
     {
         search.invalidate()
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
+        // Only clear selection when the running app has actually enabled mouse mode
+        // (e.g. vim, tmux).  For normal CLI apps (shell, Claude Code) mouse mode is
+        // off, so we preserve manual text selection while output is streaming.
+        if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
             selection.active = false
         }
         startDisplayUpdates()

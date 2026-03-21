@@ -1662,7 +1662,11 @@ extension TerminalView {
         let displayBuffer = terminal.displayBuffer
         if row != displayBuffer.yDisp {
             terminal.setViewYDisp (row)
-            
+            // Track whether the user has scrolled away from the bottom so that
+            // Terminal.scroll() does not auto-snap yDisp back to yBase while
+            // new output arrives.
+            terminal.userScrolling = (row < displayBuffer.yBase)
+
             // tell the terminal we want to refresh all the rows
             terminal.refresh (startRow: 0, endRow: terminal.rows)
             

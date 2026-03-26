@@ -1216,32 +1216,6 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
               let scalar = chars.unicodeScalars.first else {
             return nil
         }
-        if event.modifierFlags.contains(.numericPad) {
-            switch Int(scalar.value) {
-            case NSUpArrowFunctionKey:
-                return .keypadUp
-            case NSDownArrowFunctionKey:
-                return .keypadDown
-            case NSLeftArrowFunctionKey:
-                return .keypadLeft
-            case NSRightArrowFunctionKey:
-                return .keypadRight
-            case NSHomeFunctionKey:
-                return .keypadHome
-            case NSEndFunctionKey:
-                return .keypadEnd
-            case NSPageUpFunctionKey:
-                return .keypadPageUp
-            case NSPageDownFunctionKey:
-                return .keypadPageDown
-            case NSInsertFunctionKey:
-                return .keypadInsert
-            case NSDeleteFunctionKey:
-                return .keypadDelete
-            default:
-                break
-            }
-        }
         switch Int(scalar.value) {
         case NSUpArrowFunctionKey:
             return .up

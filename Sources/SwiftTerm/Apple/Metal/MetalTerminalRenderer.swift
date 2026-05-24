@@ -2143,6 +2143,12 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         if terminalView.terminal.cursorHidden {
             return ([], [], [])
         }
+        // While composing marked text (IME / dictation), the floating marked-text
+        // overlay stands in for the caret. Suppress the GPU block cursor so it
+        // doesn't show through behind the composing text.
+        if terminalView.hasMarkedText() {
+            return ([], [], [])
+        }
         let cursorRow = buffer.yBase + buffer.y
         if cursorRow < firstRow || cursorRow > lastRow || cursorRow < 0 || cursorRow >= buffer.lines.count {
             return ([], [], [])

@@ -2510,6 +2510,60 @@ open class Terminal {
         }
     }
 
+    /// Clears the screen and scrollback while preserving the logical line that
+    /// contains the cursor — typically the shell prompt and the command being
+    /// typed — moving it to the top of the screen. This mirrors iTerm2's
+    /// Cmd+K ("Clear Buffer") behavior.
+    ///
+    /// For the alternate buffer (full-screen TUIs) there is no meaningful
+    /// scrollback and the running program owns the screen, so this is a no-op.
+    public func clearScreenPreservingPrompt () {
+        guard !isCurrentBufferAlternate else { return }
+
+        // A line whose `isWrapped` is false starts a new logical line. Expand
+        // from the cursor row upward (and across any wrapped continuations
+        // below) to capture the whole prompt/command logical line.
+        let cursorRow = buffer.y
+        var topRow = cursorRow
+        while topRow > 0 && buffer.lines [buffer.yBase + topRow].isWrapped {
+            topRow -= 1
+        }
+        var bottomRow = cursorRow
+        while bottomRow + 1 < rows && buffer.lines [buffer.yBase + bottomRow + 1].isWrapped {
+            bottomRow += 1
+        }
+        let preservedCount = bottomRow - topRow + 1
+
+        // Snapshot the preserved lines (retaining their content and attributes)
+        // before mutating the buffer.
+        let preserved = (topRow ... bottomRow).map { buffer.lines [buffer.yBase + $0] }
+
+        // Drop the scrollback (everything above the viewport), like CSI 3J.
+        let scrollBackSize = buffer.lines.count - rows
+        if scrollBackSize > 0 {
+            buffer.lines.trimStart (count: scrollBackSize)
+        }
+        buffer.linesTop = 0
+        buffer.yBase = 0
+        buffer.yDisp = 0
+
+        // Rebuild the viewport: preserved lines on top, blank lines below.
+        let ea = eraseAttr ()
+        for row in 0 ..< rows {
+            if row < preservedCount {
+                buffer.lines [row] = preserved [row]
+            } else {
+                buffer.lines [row] = buffer.getBlankLine (attribute: ea)
+            }
+        }
+
+        // The cursor moves up by the number of rows removed above it; the
+        // column is unchanged.
+        buffer.y = cursorRow - topRow
+
+        updateFullScreen ()
+    }
+
     //
     // Helper method to erase cells in a terminal row.
     // The cell gets replaced with the eraseChar of the terminal.

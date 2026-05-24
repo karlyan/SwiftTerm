@@ -13,9 +13,24 @@ import UIKit
 #endif
 
 struct GlyphKey: Hashable {
-    let fontName: String
-    let size: CGFloat
+    // Identify by the CTFont *instance* (CFEqual), not its PostScript name:
+    // CoreText cascade fallback can return several distinct physical fonts that
+    // all report the same name (e.g. enclosed numbers like ① resolve to a
+    // system-fallback "PingFangSC-Regular" whose glyph table differs from the
+    // cascade "PingFangSC-Regular"). Keying by name collides them, so glyph 608
+    // gets rasterized in the wrong font and renders as a random CJK character.
+    // CFHash collides for same-name fonts, but that's fine — `==` uses CFEqual.
+    let font: CTFont
     let glyph: CGGlyph
+
+    static func == (lhs: GlyphKey, rhs: GlyphKey) -> Bool {
+        lhs.glyph == rhs.glyph && CFEqual(lhs.font, rhs.font)
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(CFHash(font))
+        hasher.combine(glyph)
+    }
 }
 
 struct GlyphEntry {
@@ -1416,9 +1431,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func glyphEntry(for font: CTFont, glyph: CGGlyph) -> GlyphEntry? {
-        let key = GlyphKey(fontName: CTFontCopyPostScriptName(font) as String,
-                           size: CTFontGetSize(font),
-                           glyph: glyph)
+        let key = GlyphKey(font: font, glyph: glyph)
         if let cached = glyphCache[key] {
             return cached
         }
@@ -1448,9 +1461,9 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func scaledFontFor(font: CTFont, scale: CGFloat) -> CTFont {
-        let key = GlyphKey(fontName: CTFontCopyPostScriptName(font) as String,
-                           size: CTFontGetSize(font) * scale,
-                           glyph: 0)
+        // Key by the source font instance (CFEqual); scale is constant per
+        // renderer. Same-name-but-distinct fallback fonts must not collide.
+        let key = GlyphKey(font: font, glyph: 0)
         if let cached = scaledFontCache[key] {
             return cached
         }

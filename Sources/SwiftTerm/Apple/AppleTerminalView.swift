@@ -1739,7 +1739,16 @@ extension TerminalView {
         terminal.feed (buffer: byteArray)
         feedFinish()
     }
-    
+
+    /// Clears the screen and scrollback while preserving the prompt line that
+    /// contains the cursor, moving it to the top — mirroring iTerm2's Cmd+K.
+    public func clearScreenPreservingPrompt ()
+    {
+        feedPrepare()
+        terminal.clearScreenPreservingPrompt()
+        feedFinish()
+    }
+
     /// Sends data to the terminal emulator for interpretation, this can be invoked from a background thread
     public func feed (text: String)
     {

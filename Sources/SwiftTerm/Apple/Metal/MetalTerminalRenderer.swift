@@ -1037,39 +1037,31 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 } else if runAttributes.keys.contains(.backgroundColor) {
                     backgroundColor = runAttributes[.backgroundColor] as? TTColor
                 }
-                    if let backgroundColor = backgroundColor {
+                    // Skip the default background: the render pass already clears to
+                    // nativeBackgroundColor *with its alpha*. Re-drawing the default
+                    // bg as a per-cell quad composites that alpha a second time,
+                    // making the terminal ~1-(1-a)^2 opaque instead of `a` (e.g. 51%
+                    // instead of 30%). Only explicit / selection backgrounds — which
+                    // differ from the default and are meant to be opaque over it — get
+                    // a quad. The end-of-line margin is likewise covered by the clear.
+                    if let backgroundColor, backgroundColor != terminalView.nativeBackgroundColor {
                         let columnSpan = max(0, endColumn - startColumn)
                         if columnSpan > 0 {
                             let x0 = lineOriginPx.x + (CGFloat(startColumn) * cellWidthPx)
                             let y0 = lineOriginPx.y
-                            var x1 = lineOriginPx.x + (CGFloat(startColumn + columnSpan) * cellWidthPx)
-                            if endColumn >= buffer.cols {
-                                if backgroundColor == terminalView.nativeBackgroundColor {
-                                    x1 = lineOriginPx.x + viewWidthPx
-                                } else {
-                                    let marginX0 = x1
-                                    let marginX1 = lineOriginPx.x + viewWidthPx
-                                    if marginX1 > marginX0 {
-                                        let (mx0, my0, mx1, my1) = transformRect(x0: marginX0, y0: y0, x1: marginX1, y1: lineOriginPx.y + cellHeightPx)
-                                        if let mClipped = self.clipRect(mx0, my0, mx1, my1, clipRect) {
-                                            let defaultBg = colorToSIMD(terminalView.nativeBackgroundColor)
-                                            backgroundCells.append(makeColorCell(x0: mClipped.0, y0: mClipped.1, x1: mClipped.2, y1: mClipped.3, color: defaultBg))
-                                        }
-                                    }
-                                }
-                            }
+                            let x1 = lineOriginPx.x + (CGFloat(startColumn + columnSpan) * cellWidthPx)
                             let y1 = lineOriginPx.y + cellHeightPx
                             let (tx0, ty0, tx1, ty1) = transformRect(x0: x0, y0: y0, x1: x1, y1: y1)
                             if let clipped = self.clipRect(tx0, ty0, tx1, ty1, clipRect) {
                                 let color = colorToSIMD(backgroundColor)
-                            backgroundCells.append(makeColorCell(x0: clipped.0,
-                                                                  y0: clipped.1,
-                                                                  x1: clipped.2,
-                                                                  y1: clipped.3,
-                                                                  color: color))
+                                backgroundCells.append(makeColorCell(x0: clipped.0,
+                                                                      y0: clipped.1,
+                                                                      x1: clipped.2,
+                                                                      y1: clipped.3,
+                                                                      color: color))
+                            }
                         }
                     }
-                }
                 processedGlyphs += runGlyphsCount
             }
         }

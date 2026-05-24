@@ -60,6 +60,13 @@ public final class BufferLine: CustomDebugStringConvertible {
 
     var images: [TerminalImage]? { didSet { bump() } }
 
+    /// True when this line's content was copied from the alternate (TUI) screen
+    /// into the normal buffer's scrollback by `saveAlternateScreenToScrollback`.
+    /// Lets callers exclude TUI snapshots from persisted scrollback while still
+    /// showing them live. Reset in `clear()` so a recycled line never inherits a
+    /// stale flag.
+    public var fromAlternateScreen = false
+
     /// Monotonically increasing counter incremented on every mutation of this line's
     /// contents (cells, isWrapped, renderMode, images). Renderers that cache per-line
     /// draw state can compare this counter against a cached value to detect in-place
@@ -93,6 +100,7 @@ public final class BufferLine: CustomDebugStringConvertible {
         // owner when it is attached to a buffer (B.3). Inheriting it from a
         // cross-buffer template leaks the wrong owner.
         images = other.images
+        fromAlternateScreen = other.fromAlternateScreen
         let otherSize = other.dataSize
         let buf = UnsafeMutableBufferPointer<CharData>.allocate(capacity: otherSize)
         #if os(Linux) || os(Windows)
@@ -160,6 +168,7 @@ public final class BufferLine: CustomDebugStringConvertible {
         data.update(repeating: empty)
         images = nil
         recycleGeneration &+= 1
+        fromAlternateScreen = false
         bump()
     }
 

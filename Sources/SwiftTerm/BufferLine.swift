@@ -30,6 +30,13 @@ public final class BufferLine: CustomDebugStringConvertible {
 
     var images: [TerminalImage]? { didSet { bump() } }
 
+    /// True when this line's content was copied from the alternate (TUI) screen
+    /// into the normal buffer's scrollback by `saveAlternateScreenToScrollback`.
+    /// Lets callers exclude TUI snapshots from persisted scrollback while still
+    /// showing them live. Reset in `clear()` so a recycled line never inherits a
+    /// stale flag.
+    public var fromAlternateScreen = false
+
     /// Monotonically increasing counter incremented on every mutation of this line's
     /// contents (cells, isWrapped, renderMode, images). Renderers that cache per-line
     /// draw state can compare this counter against a cached value to detect in-place
@@ -55,6 +62,7 @@ public final class BufferLine: CustomDebugStringConvertible {
         isWrapped = other.isWrapped
         renderMode = other.renderMode
         images = other.images
+        fromAlternateScreen = other.fromAlternateScreen
         let otherSize = other.dataSize
         let buf = UnsafeMutableBufferPointer<CharData>.allocate(capacity: otherSize)
         #if os(Linux) || os(Windows)
@@ -119,6 +127,7 @@ public final class BufferLine: CustomDebugStringConvertible {
         let empty = CharData(attribute: attribute)
         data.update(repeating: empty)
         images = nil
+        fromAlternateScreen = false
         bump()
     }
     /// Test whether contains any chars.

@@ -828,8 +828,13 @@ open class Terminal {
         // Push alt screen lines into normal buffer (they become scrollback)
         for i in 0..<lineCount {
             let altLine = altLines[altBuffer.yBase + i]
+            // Tag the copy so it can be excluded from persisted scrollback: this
+            // is a TUI snapshot, kept only for live display (e.g. after Ctrl+C),
+            // not something that should be restored on the next launch.
+            let savedLine = BufferLine(from: altLine)
+            savedLine.fromAlternateScreen = true
             let willTrim = normalLines.isFull
-            normalLines.push(BufferLine(from: altLine))
+            normalLines.push(savedLine)
 
             if !willTrim {
                 normalBuffer.yBase += 1
@@ -6062,14 +6067,21 @@ open class Terminal {
     /// Returns the contents of the specified terminal buffer encoded as UTF8 in the provided Data buffer
     /// - Parameter kind: which buffer to retrive the data for
     /// - Parameter encoding: which encoding to use for the returned value, defaults to utf8
-    public func getBufferAsData (kind: BufferKind = .active, encoding: String.Encoding = .utf8) -> Data
+    /// - Parameter stripAlternateScreen: when true, skips lines copied from the
+    ///   alternate (TUI) screen into scrollback by `saveAlternateScreenToScrollback`,
+    ///   so persisted scrollback contains real shell output only — never a frozen
+    ///   TUI snapshot.
+    public func getBufferAsData (kind: BufferKind = .active, encoding: String.Encoding = .utf8, stripAlternateScreen: Bool = false) -> Data
     {
         var result = Data()
-        
+
         let b = bufferFromKind(kind: kind)
         let newLine = Data([10])
         for row in 0..<b.lines.count {
             let bufferLine = b.lines [row]
+            if stripAlternateScreen && bufferLine.fromAlternateScreen {
+                continue
+            }
             let str = bufferLine.translateToString(trimRight: true)
             if let encoded = str.data(using: encoding) {
                 result.append (encoded)

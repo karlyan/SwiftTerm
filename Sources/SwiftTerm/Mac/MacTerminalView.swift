@@ -1430,6 +1430,11 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         markedSelectedRange = selectedRange
         kittyIsComposing = true
         updateMarkedTextOverlay()
+        #if canImport(MetalKit)
+        // Re-render so the Metal cursor is suppressed while composing (the MTKView
+        // is paused; without this the block cursor lingers behind the overlay).
+        requestMetalDisplay()
+        #endif
     }
 
     /// Shows or hides a floating overlay that previews in-progress marked text
@@ -1851,6 +1856,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         markedSelectedRange = NSRange(location: NSNotFound, length: 0)
         kittyIsComposing = false
         updateMarkedTextOverlay()
+        #if canImport(MetalKit)
+        // Re-render so the Metal cursor reappears once composition ends.
+        requestMetalDisplay()
+        #endif
     }
     
     // NSTextInputClient protocol implementation

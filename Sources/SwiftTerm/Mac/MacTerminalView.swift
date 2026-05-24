@@ -362,6 +362,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // so this is the colorspace they actually live in.
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+            // Let the cell-background alpha (carried in the render pass clear
+            // color, derived from `nativeBackgroundColor`) composite through to
+            // whatever is behind the view. Without this the CAMetalLayer is
+            // opaque and the alpha is ignored, so terminal transparency / the
+            // desktop show-through never appears under the Metal renderer.
+            metalLayer.isOpaque = false
         }
         return mtkView
     }

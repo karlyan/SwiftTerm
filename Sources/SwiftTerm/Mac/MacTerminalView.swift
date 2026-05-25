@@ -1444,6 +1444,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     /// Shows or hides a floating overlay that previews in-progress marked text
     /// (e.g. dictation hypotheses or IME composition) at the current cursor position.
+    private func getEffectiveBackgroundColor(at col: Int, line vy: Int) -> NSColor? {
+        let buffer = terminal.displayBuffer
+        guard vy >= 0, vy < buffer.lines.count, col >= 0, col < buffer.cols else {
+            return nil
+        }
+        let attribute = buffer.lines[vy][col].attribute
+        if let attrs = getAttributes(attribute, withUrl: false),
+           let cellBg = attrs[.backgroundColor] as? NSColor {
+            return cellBg
+        }
+        return nil
+    }
+
     private func updateMarkedTextOverlay() {
         guard let markedTextStorage, markedTextStorage.length > 0 else {
             markedTextOverlay?.removeFromSuperview()
@@ -1460,21 +1473,50 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             overlay.isEditable = false
             overlay.drawsBackground = true
             overlay.wantsLayer = true
-            overlay.layer?.cornerRadius = 3
             overlay.layer?.masksToBounds = true
             addSubview(overlay, positioned: .above, relativeTo: nil)
             markedTextOverlay = overlay
         }
 
+        // The cursor cell drives both the background color and the position.
+        let buffer = terminal.displayBuffer
+        let vy = buffer.yBase + buffer.y
+        let cursorOnScreen = vy >= 0 && vy < buffer.lines.count && vy < buffer.yDisp + buffer.rows
+
         // Opaque background: this overlay must fully *cover* the cursor cell —
         // TUIs (e.g. Claude Code) often render their cursor as a reverse-video
         // buffer cell, which is terminal content the cursor-suppression can't
         // remove. A translucent overlay would let that bright block show through.
-        // Opaque, terminal-colored background: on a dark terminal this box is
-        // visually invisible (same color) yet still COVERS the cursor cell that a
-        // TUI (e.g. Claude Code) paints, leaving just the underlined composing
-        // text — matching how Ghostty/iTerm render in-progress IME text inline.
-        let bg = nativeBackgroundColor.withAlphaComponent(1.0)
+        // Background = the *app's* input background at the cursor cell, not the
+        // terminal default. This keeps the overlay invisible on a default
+        // background (codex/agy) AND lets it cover a shaded input box's cursor
+        // cell (Claude Code) without painting a contrasting rectangle.
+        // We avoid sampling the cursor cell itself (at buffer.x) because it has
+        // the TUI's active bright caret/cursor color. Instead, we sample neighbor cells.
+        var bg = nativeBackgroundColor.withAlphaComponent(1.0)
+        if cursorOnScreen {
+            let leftCol = buffer.x - 1
+            let rightCol = buffer.x + 1
+            let leftBg = (leftCol >= 0) ? getEffectiveBackgroundColor(at: leftCol, line: vy) : nil
+            let rightBg = (rightCol < buffer.cols) ? getEffectiveBackgroundColor(at: rightCol, line: vy) : nil
+            
+            var sampledBg: NSColor? = nil
+            if let left = leftBg, let right = rightBg {
+                if left == right {
+                    sampledBg = left
+                } else {
+                    // If they differ, prefer the right neighbor because at the start of input,
+                    // the left neighbor is the prompt.
+                    sampledBg = right
+                }
+            } else {
+                sampledBg = rightBg ?? leftBg
+            }
+            
+            if let sampled = sampledBg {
+                bg = sampled.withAlphaComponent(1.0)
+            }
+        }
         overlay.backgroundColor = bg
         overlay.layer?.backgroundColor = bg.cgColor
 
@@ -1494,8 +1536,6 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // during display updates, so setMarkedText() would read a stale origin
         // (the overlay then appears top-left and fails to cover the cursor).
         overlay.sizeToFit()
-        let buffer = terminal.displayBuffer
-        let vy = buffer.yBase + buffer.y
         if vy >= 0, vy < buffer.lines.count, vy < buffer.yDisp + buffer.rows {
             let doublePosition = buffer.lines[vy].renderMode == .single ? 1.0 : 2.0
             let offset = cellDimension.height * CGFloat(buffer.y - (buffer.yDisp - buffer.yBase) + 1)

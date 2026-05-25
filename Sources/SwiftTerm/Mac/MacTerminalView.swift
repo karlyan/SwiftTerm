@@ -2072,6 +2072,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             width: overlayWidth,
             height: overlayHeight
         )
+
+        #if canImport(MetalKit)
+        // Force the overlay above the Metal view. addSubview(.above, relativeTo:
+        // nil) is not enough against a CAMetalLayer-backed sibling, and the MTKView
+        // is recreated on reparent, so re-establish the order + a high zPosition on
+        // every update. Without this the opaque background renders *under* the
+        // Metal content and fails to cover the TUI cursor cell.
+        if let metalView {
+            overlay.removeFromSuperview()
+            addSubview(overlay, positioned: .above, relativeTo: metalView)
+            overlay.layer?.zPosition = 10_000
+        }
+        #endif
     }
 
     private func kittyEncoder() -> KittyKeyboardEncoder {

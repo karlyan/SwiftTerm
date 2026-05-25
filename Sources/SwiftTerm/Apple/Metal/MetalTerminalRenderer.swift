@@ -2668,13 +2668,10 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         descriptor.fragmentFunction = fragment
         let attachment = descriptor.colorAttachments[0]!
         attachment.pixelFormat = view.colorPixelFormat
-        attachment.isBlendingEnabled = true
-        attachment.rgbBlendOperation = .add
-        attachment.alphaBlendOperation = .add
-        attachment.sourceRGBBlendFactor = .one
-        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-        attachment.sourceAlphaBlendFactor = .one
-        attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        // The text fragments composite the glyph over the background themselves in
+        // linear space (reading the destination via framebuffer fetch), so hardware
+        // blending must be OFF — the fragment outputs the final straight-sRGB color.
+        attachment.isBlendingEnabled = false
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 

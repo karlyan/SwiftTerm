@@ -422,6 +422,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             applyStoredTextTuning()
             metalBoundWindow = window
             needsDisplay = false
+            // Force a synchronous first draw (mirrors `rebindMetalRendererToWindow`)
+            // so the terminal's first visible frame is already its (alpha)
+            // background rather than a clear frame. Without this, a freshly
+            // enabled Metal view shows one transparent frame before its first
+            // render — which on a non-opaque window flashes the desktop through.
+            mtkView.draw()
             mtkView.setNeedsDisplay(mtkView.bounds)
         } else {
             metalView?.delegate = nil

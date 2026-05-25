@@ -1668,6 +1668,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // TUIs (e.g. Claude Code) often render their cursor as a reverse-video
         // buffer cell, which is terminal content the cursor-suppression can't
         // remove. A translucent overlay would let that bright block show through.
+        // Opaque, terminal-colored background: on a dark terminal this box is
+        // visually invisible (same color) yet still COVERS the cursor cell that a
+        // TUI (e.g. Claude Code) paints, leaving just the underlined composing
+        // text — matching how Ghostty/iTerm render in-progress IME text inline.
         let bg = nativeBackgroundColor.withAlphaComponent(1.0)
         overlay.backgroundColor = bg
         overlay.layer?.backgroundColor = bg.cgColor
@@ -1703,6 +1707,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         if overlay.frame.maxX > bounds.maxX {
             overlay.frame.origin.x = max(0, bounds.maxX - overlay.frame.width)
         }
+
+        #if canImport(MetalKit)
+        // Force the overlay above the Metal view. addSubview(.above, relativeTo:
+        // nil) is not enough against a CAMetalLayer-backed sibling, and the MTKView
+        // is recreated on reparent, so re-establish the order + a high zPosition on
+        // every update. Without this the opaque background renders *under* the
+        // Metal content and fails to cover the TUI cursor cell.
+        if let metalView {
+            overlay.removeFromSuperview()
+            addSubview(overlay, positioned: .above, relativeTo: metalView)
+            overlay.layer?.zPosition = 10_000
+        }
+        #endif
     }
 
     private func kittyEncoder() -> KittyKeyboardEncoder {

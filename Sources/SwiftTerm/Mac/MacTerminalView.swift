@@ -2003,7 +2003,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // with whatever the rest of the view is rendering. `nativeBackgroundColor`
         // is typically `NSColor.windowBackgroundColor` (dynamic: adapts to
         // light/dark) when the host has called `configureNativeColors()`.
-        overlay.overlayBackgroundColor = effectiveNativeBackgroundColor
+        //
+        // Opaque: this overlay must fully *cover* the cursor cell — TUIs (e.g.
+        // Claude Code) often render their cursor as a reverse-video buffer cell,
+        // which is terminal content the cursor-suppression can't remove. With a
+        // translucent terminal background (backgroundOpacity < 1) the effective
+        // color carries that alpha and would let the bright block show through.
+        overlay.overlayBackgroundColor = effectiveNativeBackgroundColor.withAlphaComponent(1.0)
 
         // Match terminal line metrics so wrapped lines line up with terminal rows.
         let lineHeight = cellDimension.height
@@ -2031,6 +2037,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             .kern: kern,
         ], range: fullRange)
         overlay.textStorage?.setAttributedString(display)
+
+        // Position from the *terminal* cursor cell. Under the Metal renderer the
+        // caret view is hidden and only repositioned by updateCursorPosition()
+        // during display updates, so setMarkedText() could otherwise read a
+        // stale frame (the overlay then appears top-left and fails to cover the
+        // cursor). Refresh it from the display buffer before reading it.
+        updateCursorPosition()
 
         // The overlay spans the full content width. Line 1 skips the portion
         // already occupied by text to the left of the caret (e.g. the prompt)

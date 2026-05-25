@@ -1974,6 +1974,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     /// Shows or hides a floating overlay that previews in-progress marked text
     /// (e.g. dictation hypotheses or IME composition) at the current cursor position.
+    private func getEffectiveBackgroundColor(at col: Int, line vy: Int) -> NSColor? {
+        let buffer = terminal.displayBuffer
+        guard vy >= 0, vy < buffer.lines.count, col >= 0, col < buffer.cols else {
+            return nil
+        }
+        let attribute = buffer.lines[vy][col].attribute
+        if let attrs = getAttributes(attribute, withUrl: false),
+           let cellBg = attrs[.backgroundColor] as? NSColor {
+            return cellBg
+        }
+        return nil
+    }
+
     private func updateMarkedTextOverlay() {
         guard let markedTextStorage, markedTextStorage.length > 0 else {
             markedTextOverlay?.removeFromSuperview()
@@ -1999,17 +2012,35 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             overlay = tv
         }
 
-        // Match the terminal's effective background so the overlay blends in
-        // with whatever the rest of the view is rendering. `nativeBackgroundColor`
-        // is typically `NSColor.windowBackgroundColor` (dynamic: adapts to
-        // light/dark) when the host has called `configureNativeColors()`.
+        // Background = the *app's* input background at the cursor cell, not the
+        // terminal default. This keeps the overlay invisible on a default
+        // background (codex/agy) AND lets it cover a shaded input box's cursor
+        // cell (Claude Code) without painting a contrasting rectangle.
+        // We avoid sampling the cursor cell itself (at buffer.x) because it has
+        // the TUI's active bright caret/cursor color. Instead, we sample neighbor
+        // cells; the terminal's effective background is the fallback.
         //
         // Opaque: this overlay must fully *cover* the cursor cell — TUIs (e.g.
         // Claude Code) often render their cursor as a reverse-video buffer cell,
         // which is terminal content the cursor-suppression can't remove. With a
         // translucent terminal background (backgroundOpacity < 1) the effective
         // color carries that alpha and would let the bright block show through.
-        overlay.overlayBackgroundColor = effectiveNativeBackgroundColor.withAlphaComponent(1.0)
+        let buffer = terminal.displayBuffer
+        let vy = buffer.yBase + buffer.y
+        let cursorOnScreen = vy >= 0 && vy < buffer.lines.count && vy < buffer.yDisp + buffer.rows
+        var bg = effectiveNativeBackgroundColor
+        if cursorOnScreen {
+            let leftCol = buffer.x - 1
+            let rightCol = buffer.x + 1
+            let leftBg = (leftCol >= 0) ? getEffectiveBackgroundColor(at: leftCol, line: vy) : nil
+            let rightBg = (rightCol < buffer.cols) ? getEffectiveBackgroundColor(at: rightCol, line: vy) : nil
+            // If they differ, prefer the right neighbor because at the start of
+            // input the left neighbor is the prompt.
+            if let sampled = rightBg ?? leftBg {
+                bg = sampled
+            }
+        }
+        overlay.overlayBackgroundColor = bg.withAlphaComponent(1.0)
 
         // Match terminal line metrics so wrapped lines line up with terminal rows.
         let lineHeight = cellDimension.height

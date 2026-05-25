@@ -6622,6 +6622,12 @@ open class Terminal {
             newLineState = currentBidiState
         }
 
+        // Follow new output to the bottom only when the viewport was already at
+        // the bottom. Once the user has scrolled up (yDisp < yBase) the view
+        // stays put so they can read older content; scrolling back to the bottom
+        // resumes following. `userScrolling` is kept as an explicit override.
+        let followBottom = (buffer.yDisp >= buffer.yBase) && !userScrolling
+
         var newLine = blankLine
         if newLine.count != cols || newLine [0].attribute != eraseAttr () {
             newLine = buffer.getBlankLine (attribute: eraseAttr (), isWrapped: isWrapped)
@@ -6695,7 +6701,7 @@ open class Terminal {
             if !willBufferBeTrimmed {
                 buffer.yBase += 1
                 // Only scroll the ydisp with ybase if the user has not scrolled up
-                if !userScrolling {
+                if followBottom {
                     buffer.yDisp += 1
                 }
             } else {
@@ -6709,7 +6715,7 @@ open class Terminal {
 
                 // When the buffer is full and the user has scrolled up, keep the text
                 // stable unless ydisp is right at the top
-                if userScrolling {
+                if !followBottom {
                     buffer.yDisp = max (buffer.yDisp - 1, 0)
                 }
             }
@@ -6737,9 +6743,9 @@ open class Terminal {
             selectionsAdjustForInPlaceScroll (top: topRow, bottom: bottomRow, lines: 1)
         }
 
-        // Move the viewport to the bottom of the buffer unless the user is
-        // scrolling.
-        if !userScrolling {
+        // Move the viewport to the bottom of the buffer unless the user has
+        // scrolled up to read older content.
+        if followBottom {
             buffer.yDisp = buffer.yBase
         }
 

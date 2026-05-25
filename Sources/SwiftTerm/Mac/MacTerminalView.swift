@@ -1657,12 +1657,20 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             overlay.isBezeled = false
             overlay.isEditable = false
             overlay.drawsBackground = true
-            overlay.backgroundColor = nativeBackgroundColor.withAlphaComponent(0.9)
             overlay.wantsLayer = true
             overlay.layer?.cornerRadius = 3
+            overlay.layer?.masksToBounds = true
             addSubview(overlay, positioned: .above, relativeTo: nil)
             markedTextOverlay = overlay
         }
+
+        // Opaque background: this overlay must fully *cover* the cursor cell —
+        // TUIs (e.g. Claude Code) often render their cursor as a reverse-video
+        // buffer cell, which is terminal content the cursor-suppression can't
+        // remove. A translucent overlay would let that bright block show through.
+        let bg = nativeBackgroundColor.withAlphaComponent(1.0)
+        overlay.backgroundColor = bg
+        overlay.layer?.backgroundColor = bg.cgColor
 
         // Style the text to match the terminal font/colors with an underline.
         let displayString = NSMutableAttributedString(attributedString: markedTextStorage)
@@ -1674,9 +1682,22 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         ], range: fullRange)
         overlay.attributedStringValue = displayString
 
-        // Position at the caret.
+        // Position at the *terminal* cursor cell, computed straight from the
+        // display buffer. Don't use caretView.frame: under the Metal renderer the
+        // caret view is hidden and only repositioned by updateCursorPosition()
+        // during display updates, so setMarkedText() would read a stale origin
+        // (the overlay then appears top-left and fails to cover the cursor).
         overlay.sizeToFit()
-        overlay.frame.origin = caretView.frame.origin
+        let buffer = terminal.displayBuffer
+        let vy = buffer.yBase + buffer.y
+        if vy >= 0, vy < buffer.lines.count, vy < buffer.yDisp + buffer.rows {
+            let doublePosition = buffer.lines[vy].renderMode == .single ? 1.0 : 2.0
+            let offset = cellDimension.height * CGFloat(buffer.y - (buffer.yDisp - buffer.yBase) + 1)
+            overlay.frame.origin = CGPoint(x: cellDimension.width * doublePosition * CGFloat(buffer.x),
+                                           y: frame.height - offset)
+        } else {
+            overlay.frame.origin = caretView.frame.origin
+        }
 
         // Clamp to view bounds so the overlay doesn't extend off-screen.
         if overlay.frame.maxX > bounds.maxX {

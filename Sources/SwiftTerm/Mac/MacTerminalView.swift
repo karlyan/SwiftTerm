@@ -1290,6 +1290,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // of those keys.
     //
     public override func keyDown(with event: NSEvent) {
+        // Typing returns the viewport to the bottom so input lands in view,
+        // matching iTerm/Terminal.app/Ghostty. After scrolling up to read older
+        // output (Terminal.scroll keeps the viewport put), a keypress means the
+        // user is about to interact, so jump back to the live prompt. Cmd-key
+        // equivalents go through performKeyEquivalent, not keyDown, so copy/find
+        // while scrolled up are unaffected; canScroll is false on the alt screen.
+        if canScroll && scrollPosition < 1.0 {
+            scroll(toPosition: 1.0)
+        }
         selection.active = false
         let eventFlags = event.modifierFlags
 

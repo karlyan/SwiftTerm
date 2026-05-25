@@ -1959,6 +1959,11 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         markedSelectedRange = selectedRange
         kittyIsComposing = true
+        // Hide the CoreGraphics caret while composing; the marked-text overlay
+        // stands in for it. (The Metal cursor is suppressed separately in the
+        // renderer via hasMarkedText().) Covers any case where the caret view is
+        // visible behind the composing text.
+        caretView?.isHidden = true
         updateMarkedTextOverlay()
         #if canImport(MetalKit)
         // Re-render so the Metal cursor is suppressed while composing (the MTKView
@@ -2431,6 +2436,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         markedTextStorage = nil
         markedSelectedRange = NSRange(location: NSNotFound, length: 0)
         kittyIsComposing = false
+        // Restore the caret: stay hidden under Metal (the GPU draws the cursor),
+        // show again under CoreGraphics.
+        caretView?.isHidden = isUsingMetalRenderer
         updateMarkedTextOverlay()
         #if canImport(MetalKit)
         // Re-render so the Metal cursor reappears once composition ends.

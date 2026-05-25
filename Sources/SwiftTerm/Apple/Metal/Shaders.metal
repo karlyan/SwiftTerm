@@ -66,18 +66,48 @@ vertex GlyphOut terminal_cell_text_vertex(uint vid [[vertex_id]],
     return out;
 }
 
+// sRGB <-> linear (IEC 61966-2-1). Text is composited over the background in
+// linear space so anti-aliased edges blend correctly (Ghostty-style), instead of
+// the default hardware blend that mixes gamma-encoded sRGB values directly.
+inline float3 srgbToLinear(float3 c) {
+    return select(c / 12.92, pow((c + 0.055) / 1.055, 2.4), c > 0.04045);
+}
+inline float3 linearToSrgb(float3 c) {
+    return select(c * 12.92, 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055, c > 0.0031308);
+}
+
+// Color glyph (emoji): atlas holds premultiplied sRGB. Composite over the
+// destination (read via framebuffer fetch) in linear space; blending is disabled
+// on the text pipeline so we output the final straight-sRGB color directly.
 fragment float4 terminal_text_fragment(GlyphOut in [[stage_in]],
+                                       float4 dst [[color(0)]],
                                        texture2d<float> atlas [[texture(0)]],
                                        sampler samp [[sampler(0)]]) {
     float4 tex = atlas.sample(samp, in.texCoord);
-    return float4(tex.rgb * in.color.rgb, tex.a * in.color.a);
+    float a = tex.a * in.color.a;
+    if (a <= 0.0) return dst;
+    float3 glyphStraight = tex.a > 0.0 ? tex.rgb / tex.a : tex.rgb;
+    float3 fgLin = srgbToLinear(glyphStraight) * srgbToLinear(in.color.rgb);
+    float3 bgLin = srgbToLinear(dst.rgb);
+    float outA = a + dst.a * (1.0 - a);
+    float3 outLin = (fgLin * a + bgLin * dst.a * (1.0 - a)) / max(outA, 1e-4);
+    return float4(linearToSrgb(outLin), outA);
 }
 
+// Grayscale glyph: atlas holds coverage in .r. Composite the foreground color
+// over the destination in linear space.
 fragment float4 terminal_text_fragment_gray(GlyphOut in [[stage_in]],
+                                            float4 dst [[color(0)]],
                                             texture2d<float> atlas [[texture(0)]],
                                             sampler samp [[sampler(0)]]) {
     float coverage = atlas.sample(samp, in.texCoord).r;
-    return float4(in.color.rgb * coverage, in.color.a * coverage);
+    float a = coverage * in.color.a;
+    if (a <= 0.0) return dst;
+    float3 fgLin = srgbToLinear(in.color.rgb);
+    float3 bgLin = srgbToLinear(dst.rgb);
+    float outA = a + dst.a * (1.0 - a);
+    float3 outLin = (fgLin * a + bgLin * dst.a * (1.0 - a)) / max(outA, 1e-4);
+    return float4(linearToSrgb(outLin), outA);
 }
 
 struct ColorVertex {

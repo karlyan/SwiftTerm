@@ -240,6 +240,23 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         presentedFrameCount: 0,
         lastFramePresentedAt: nil
     )
+    /// Stored Graphics-tab text tuning, re-applied whenever the Metal renderer is (re)created.
+    private var storedTextTuning = TextTuning.default
+    private var storedNearestSampling = false
+
+    /// Set live text-rendering knobs (Graphics settings). No-op unless Metal is active.
+    public func setTextTuning(gammaAmount: Float, coverageGamma: Float, minContrast: Float, nearestSampling: Bool) {
+        storedTextTuning = TextTuning(gammaAmount: gammaAmount, coverageGamma: coverageGamma, minContrast: minContrast)
+        storedNearestSampling = nearestSampling
+        applyStoredTextTuning()
+    }
+
+    private func applyStoredTextTuning() {
+        metalRenderer?.applyTextTuning(gammaAmount: storedTextTuning.gammaAmount,
+                                       coverageGamma: storedTextTuning.coverageGamma,
+                                       minContrast: storedTextTuning.minContrast,
+                                       nearestSampling: storedNearestSampling)
+    }
     /// The NSWindow that the current `metalView`'s CAMetalLayer is bound to.
     /// CAMetalLayer's binding to a window's WindowServer surface doesn't
     /// survive being reparented across NSWindow instances — `present(_:)`
@@ -463,6 +480,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             insertMetalView(mtkView, replacing: nil)
             metalView = mtkView
             metalRenderer = renderer
+            applyStoredTextTuning()
             metalBoundWindow = window
             // Metal's clear color paints the background; if the host layer
             // painted it too, a translucent background would composite twice
@@ -580,6 +598,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 #if canImport(os)
         metalRecoverySignpostID = metalRecoverySignpostID ?? MetalRecoverySignpost.begin()
 #endif
+        newRenderer.applyTextTuning(gammaAmount: storedTextTuning.gammaAmount,
+                                    coverageGamma: storedTextTuning.coverageGamma,
+                                    minContrast: storedTextTuning.minContrast,
+                                    nearestSampling: storedNearestSampling)
 
         // Critical sequence: the new layer must have visible content before
         // the old view is removed. Force a synchronous draw, plus a

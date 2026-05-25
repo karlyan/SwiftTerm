@@ -71,6 +71,16 @@ struct ColorCell {
     var color: SIMD4<Float>
 }
 
+/// Live-tunable text rendering knobs. Mirrors the `TextTuning` struct in Shaders.metal
+/// (3 packed floats) and is uploaded per-frame via `setFragmentBytes`.
+struct TextTuning: Equatable {
+    var gammaAmount: Float   // 0 = legacy sRGB blend, 1 = full linear blend
+    var coverageGamma: Float // power on AA coverage; <1 thicker, >1 thinner
+    var minContrast: Float   // 0 = off .. 1 = strong
+
+    static let `default` = TextTuning(gammaAmount: 1, coverageGamma: 1, minContrast: 0)
+}
+
 struct ImageDraw {
     let texture: MTLTexture
     let vertices: [GlyphVertex]
@@ -207,6 +217,15 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
     private let cellTextGrayPipeline: MTLRenderPipelineState
     private let cellColorPipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
+    private let nearestSampler: MTLSamplerState
+    /// Live text rendering knobs (Graphics settings). Changing redraws.
+    var textTuning = TextTuning.default {
+        didSet { if textTuning != oldValue { requestRedraw() } }
+    }
+    var useNearestSampling = false {
+        didSet { if useNearestSampling != oldValue { requestRedraw() } }
+    }
+    private var activeSampler: MTLSamplerState { useNearestSampling ? nearestSampler : sampler }
     private let textureLoader: MTKTextureLoader
     private let bufferPool: BufferPool
     private let shaperCache = ShaperCache(maxEntries: 2048)
@@ -309,6 +328,15 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
             throw MetalError.samplerUnavailable
         }
         self.sampler = sampler
+        let nearestDesc = MTLSamplerDescriptor()
+        nearestDesc.minFilter = .nearest
+        nearestDesc.magFilter = .nearest
+        nearestDesc.sAddressMode = .clampToEdge
+        nearestDesc.tAddressMode = .clampToEdge
+        guard let nearestSampler = device.makeSamplerState(descriptor: nearestDesc) else {
+            throw MetalError.samplerUnavailable
+        }
+        self.nearestSampler = nearestSampler
         self.terminalView = terminalView
         super.init()
     }
@@ -447,6 +475,10 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         bufferPool.beginFrame()
         let viewport = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
 
+        // Text-tuning uniform persists on the encoder for every text fragment draw.
+        var tuning = textTuning
+        encoder.setFragmentBytes(&tuning, length: MemoryLayout<TextTuning>.stride, index: 0)
+
         if let frame = drawData.frame {
             drawFrameData(frame, encoder: encoder, viewport: viewport)
         } else {
@@ -519,7 +551,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 var viewportVar = viewport
                 encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
                 encoder.setFragmentTexture(grayscaleAtlas.texture, index: 0)
-                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.setFragmentSamplerState(activeSampler, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: drawData.cursorGlyphVerticesGray.count)
             }
         }
@@ -531,7 +563,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 var viewportVar = viewport
                 encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
                 encoder.setFragmentTexture(colorAtlas.texture, index: 0)
-                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.setFragmentSamplerState(activeSampler, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: drawData.cursorGlyphVerticesColor.count)
             }
         }
@@ -575,6 +607,24 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
     /// (1024 -> ... -> maxSize) can invalidate passes, then one reset, and
     /// finally one frozen pass that is guaranteed not to invalidate.
     private static let maxAtlasRebuildPasses = 5
+
+    /// Apply live text-rendering knobs and force a redraw (Graphics settings).
+    func applyTextTuning(gammaAmount: Float, coverageGamma: Float, minContrast: Float, nearestSampling: Bool) {
+        textTuning = TextTuning(gammaAmount: gammaAmount, coverageGamma: coverageGamma, minContrast: minContrast)
+        useNearestSampling = nearestSampling
+    }
+
+    private func requestRedraw() {
+        markPendingRedraw()
+        if Thread.isMainThread {
+            view?.setNeedsDisplay(view?.bounds ?? .zero)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let view = self.view else { return }
+                view.setNeedsDisplay(view.bounds)
+            }
+        }
+    }
 
     private func buildDrawData(scale: CGFloat) -> DrawData {
         defer {
@@ -2007,7 +2057,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         if let texture {
             encoder.setFragmentTexture(texture, index: 0)
-            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentSamplerState(activeSampler, index: 0)
         }
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: cells.count * 6)
     }
@@ -2049,7 +2099,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
             return
         }
         encoder.setRenderPipelineState(textPipeline)
-        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentSamplerState(activeSampler, index: 0)
         var viewportVar = viewport
         encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         for draw in draws {
@@ -2084,7 +2134,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         if let texture {
             encoder.setFragmentTexture(texture, index: 0)
-            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentSamplerState(activeSampler, index: 0)
         }
         for row in rows {
             guard let buffer = row[keyPath: bufferKey] else {
@@ -2114,7 +2164,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
             return
         }
         encoder.setRenderPipelineState(textPipeline)
-        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentSamplerState(activeSampler, index: 0)
         var viewportVar = viewport
         encoder.setVertexBytes(&viewportVar, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         for row in rows {

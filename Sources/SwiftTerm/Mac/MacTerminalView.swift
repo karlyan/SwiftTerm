@@ -908,10 +908,11 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     open func linefeed(source: Terminal) {
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
-            selection.selectNone()
-        }
+        // Do NOT clear the selection on linefeed. Selection positions are anchored to
+        // absolute buffer coordinates, so they stay correct as new lines arrive — the
+        // user can keep a selection (and copy it) while a TUI streams output. Upstream
+        // only preserved it when mouse reporting was off; every TUI turns mouse
+        // reporting on, which made selecting text during output impossible.
     }
     
     /// This vaiable controls whether mouse events are sent to the application running under the

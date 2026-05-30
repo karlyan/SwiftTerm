@@ -2134,10 +2134,13 @@ extension TerminalView {
     func feedPrepare()
     {
         search.invalidate()
-        // Preserve manual selection while output is streaming when mouse reporting is disabled.
-        if allowMouseReporting {
-            selection.active = false
-        }
+        // Do NOT clear the selection while output streams. Selection positions are
+        // anchored to absolute buffer coordinates (upstream PR #471), so a manual
+        // selection stays correct as new lines arrive — letting the user select and
+        // copy text even while a TUI keeps redrawing (e.g. Claude Code "thinking").
+        // This `selection.active = false` only ever destroyed an active selection the
+        // user was holding; with mouse reporting on (every TUI) it made selecting text
+        // during output impossible.
         startDisplayUpdates()
     }
     

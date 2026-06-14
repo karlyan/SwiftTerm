@@ -3146,6 +3146,9 @@ open class Terminal {
                             line [colTarget+col] = lr [col]
                         }
                     }
+                    // P1 substrate + pre-existing renderer-dirty fix: DECCRA writes the TARGET
+                    // rectangle rows with no updateRange. Mark/capture exactly the target row span.
+                    updateRange (startLine: rowTarget, endLine: min (rowTarget + (bottom - top), rows - 1))
                 }
             }
         }
@@ -3167,6 +3170,9 @@ open class Terminal {
                         line [col] = fillData
                     }
                 }
+                // P1 substrate + pre-existing renderer-dirty fix: DECFRA filled the rectangle with
+                // no updateRange. Mark/capture exactly the filled rows.
+                updateRange (startLine: top, endLine: bottom)
             }
         } else {
             log ("Not implemented CSI x with collect: collect=\(collect) and pars=\(pars)")
@@ -3197,6 +3203,9 @@ open class Terminal {
                 line.insertCells(pos: buffer.x, n: n, rightMargin: marginMode ? buffer.marginRight : cols-1, fillData: buffer.getNullCell())
                 line.isWrapped = false
             }
+            // P1 substrate + pre-existing renderer-dirty fix: DECIC mutated every region row with no
+            // updateRange. Capture/mark the full region, exactly like DECDC (cmdDeleteColumns).
+            updateRange (startLine: buffer.scrollTop, endLine: buffer.scrollBottom)
             return
         } else {
             log ("CSI # } not implemented- XTPOPSGR with \(pars)")
@@ -3273,6 +3282,9 @@ open class Terminal {
                     line [col] = fillData
                 }
             }
+            // P1 substrate + pre-existing renderer-dirty fix: DECERA erased the rectangle with no
+            // updateRange. Mark/capture exactly the erased rows.
+            updateRange (startLine: top, endLine: bottom)
         }
     }
 
@@ -3305,6 +3317,9 @@ open class Terminal {
                     line [col] = cd
                 }
             }
+            // P1 substrate + pre-existing renderer-dirty fix: DECSERA selective-erased the rectangle
+            // with no updateRange. Mark/capture exactly the affected rows.
+            updateRange (startLine: top, endLine: bottom)
         }
     }
     /**
@@ -5112,6 +5127,10 @@ open class Terminal {
             start: buffer.x,
             end: buffer.x + p,
             fillData: CharData (attribute:  eraseAttr ()))
+
+        // P1 substrate + pre-existing renderer-dirty fix: ECH mutated the row with no updateRange
+        // (its sibling DCH/cmdDeleteChars already has one). Capture/mark the single affected row.
+        updateRange (buffer.y)
     }
 
     func csiT (_ pars: [Int], _ collect: cstring)

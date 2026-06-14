@@ -480,8 +480,12 @@ open class Terminal {
         /// A row's cell content changed. `absRow` = eviction-stable absolute row
         /// (`buffer.linesTop + lineIndex`); `text` = a by-value snapshot taken at mutation time.
         case textWrite(absRow: Int, text: String)
-        /// A scroll-region shift. `count` > 0 ⇒ content moved up by `count` rows (new blanks at the
-        /// bottom of the region); `count` < 0 ⇒ moved down. `top`/`bottom` are visible-relative rows.
+        /// A viewport scroll-UP of `count` rows (`count >= 1`): content in [top, bottom] moved up,
+        /// a blank appears at the bottom (and, in the normal buffer, the displaced top row goes to
+        /// scrollback). `top`/`bottom` are visible-relative rows. This is the ONLY structural op the
+        /// substrate emits as a `.scroll`; downward shifts (RI / DECBI) and region edits (IL / DL /
+        /// SU / SD) are recorded as per-row `.textWrite`s of their post-shift content instead, so the
+        /// taxonomy never claims an op it doesn't emit.
         case scroll(top: Int, bottom: Int, count: Int)
         /// An erase / invalidation; see `ClearScope`.
         case clear(scope: ClearScope)
@@ -921,6 +925,9 @@ open class Terminal {
         
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
         altBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
+        // P1 substrate: capture each row a wrapping write leaves, by value, in log order.
+        normalBuffer.onRowLeftDuringWrap = { [weak self] lineIndex in self?.captureRow(lineIndex: lineIndex) }
+        altBuffer.onRowLeftDuringWrap = { [weak self] lineIndex in self?.captureRow(lineIndex: lineIndex) }
 
         setupTabStops()
 
@@ -1011,6 +1018,7 @@ open class Terminal {
     public func resetNormalBuffer() {
         normalBuffer = Buffer(cols: cols, rows: rows, tabStopWidth: tabStopWidth, scrollback: options.scrollback)
         normalBuffer.scroll = { [weak self] wrapped in self?.scroll(isWrapped: wrapped) }
+        normalBuffer.onRowLeftDuringWrap = { [weak self] lineIndex in self?.captureRow(lineIndex: lineIndex) }
 
         normalBuffer.fillViewportRows()
         normalBuffer.setupTabStops(tabStopWidth: tabStopWidth)
@@ -5681,8 +5689,12 @@ open class Terminal {
             }
             //line.isWrapped = false
         }
-        updateRange (buffer.scrollTop)
-        updateRange (buffer.scrollBottom)
+        // P1 substrate (funnel completeness): DECBI/DECFI mutates EVERY row in the region via
+        // insertCells/deleteCells, so capture the full range — the two endpoint marks alone would
+        // log only scrollTop/scrollBottom and silently drop every interior row. The range funnel
+        // marks the same renderer bounds (both endpoints) and is byte-identical to the two calls
+        // when capture is off.
+        updateRange (startLine: buffer.scrollTop, endLine: buffer.scrollBottom)
     }
     
     // ESC D Index (Index is 0x84) - IND

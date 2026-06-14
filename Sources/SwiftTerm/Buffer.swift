@@ -268,6 +268,14 @@ public final class Buffer {
     var scroll: (_ isWrapped: Bool)->() = { x in
         fatalError("This should be set after creating a buffer")
     }
+
+    /// P1 incremental-read substrate hook: called the instant the cursor is about to LEAVE a row
+    /// during an auto-wrap (before `_y += 1` or `scroll(true)`), with the lines-array index of the
+    /// row being left. The Terminal wires this to capture that row's now-final content by value, in
+    /// log order with any `.scroll` the wrap triggers — so a line wrapping across rows (and the
+    /// rows shifted by a wrap-at-bottom scroll) reconstruct exactly. Default no-op (zero-cost,
+    /// flag-off byte-identical); the Terminal side early-outs unless capture is enabled.
+    var onRowLeftDuringWrap: (_ lineIndex: Int)->() = { _ in }
     
     func setInsertMode(_ value: Bool) {
         self.insertMode = value
@@ -1163,6 +1171,9 @@ public final class Buffer {
         while idx < bytes.endIndex {
             if _x > right {
                 guard wraparound else { break }
+                // P1: this row is now full and the cursor is about to leave it — capture its final
+                // content (in order, before any scroll() the wrap triggers).
+                onRowLeftDuringWrap(_y + _yBase)
                 _x = marginMode ? _marginLeft : 0
                 if _y >= _scrollBottom {
                     scroll(true)
@@ -1200,8 +1211,11 @@ public final class Buffer {
             // autowrap - DECAWM
             // automatically wraps to the beginning of the next line
             if wraparound {
+                // P1: capture the row being left (now full) before the wrap, in order with any
+                // scroll() the wrap triggers, so a wrapped line reconstructs exactly.
+                onRowLeftDuringWrap(_y + _yBase)
                 _x = marginMode ? _marginLeft : 0
-                
+
                 if _y >= _scrollBottom {
                     scroll (true)
                 } else {

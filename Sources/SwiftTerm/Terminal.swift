@@ -435,6 +435,227 @@ open class Terminal {
     var refreshEnd = -1
     var scrollInvariantRefreshStart = Int.max
     var scrollInvariantRefreshEnd = -1
+
+    // ===== AI-native incremental read substrate (P1 / M3) — mutation-time event log =====
+    //
+    // A durable, per-session, append-only log of *change events* captured at mutation time —
+    // copy-by-value, BEFORE the renderer's clearUpdateRange() wipes the coalesced dirty hint. This
+    // is the L1 channel of docs/design/ai-native-tui-interface.md: the existing refreshStart/End
+    // bounds are a coalesced, renderer-cleared *hint* (no content, reset every frame), so reading
+    // rows at request time silently desyncs. Instead we snapshot the freshly-mutated content here.
+    //
+    // It folds the M2 feasibility spike (spike/p0-damage-exposure) into a production capability and
+    // adds the four things the spike deferred (findings §5):
+    //   (a) Event taxonomy: scroll / clear / resize / buffer-switch are FIRST-CLASS ops alongside
+    //       the row text-write op — not a flood of row rewrites.
+    //   (b) Index reconciliation: every text-write carries an EVICTION-STABLE absolute row
+    //       (`buffer.linesTop + lineIndex`), unambiguous across scrollback trimming, the scrolling
+    //       path, and the alternate buffer (disambiguated by `bufferKind`). The spike's `yBase + y`
+    //       was not eviction-stable.
+    //   (c) Funnel completeness: every mutated row is marked, including updateRange(startLine:endLine:)
+    //       which upstream marks only at its two endpoints (see that funnel below).
+    //   (d) One monotonic `eventSeq` plus two watermarks — `contentSeq` (last cell change) and
+    //       `driveSeq` (mode/geometry/buffer changes, EXCLUDING cursor-only moves; leases bind here).
+    //
+    // DEFAULT-OFF: `mutationCaptureEnabled == false` ⇒ the substrate is completely inert and the
+    // terminal is byte-identical to upstream (every hook is a single guarded branch that early-outs).
+    //
+    // Threading: these methods read/write terminal state and must be called on the same queue that
+    // applies terminal mutations (the bridge's terminal actor). No internal locking (matches upstream).
+
+    // NOTE on coordinate space: the normal and alternate buffers have independent coordinate
+    // spaces; moving between them is a `.bufferSwitch` event. Events carry which buffer they apply
+    // to via the existing `Terminal.BufferKind` (`.normal` / `.alt`); `.active` is never emitted.
+
+    /// Scope of a `.clear` op.
+    public enum ClearScope: Equatable {
+        case below        // CSI 0 J — cursor row to end of screen
+        case above        // CSI 1 J — start of screen to cursor row
+        case all          // CSI 2 J, or a full-screen invalidation (RIS / Cmd-K): re-snapshot the screen
+        case scrollback   // CSI 3 J — scrollback dropped; prior absolute rows are invalidated (epoch-like)
+    }
+
+    /// A first-class change operation. Every recorded change is one of these.
+    public enum ChangePayload: Equatable {
+        /// A row's cell content changed. `absRow` = eviction-stable absolute row
+        /// (`buffer.linesTop + lineIndex`); `text` = a by-value snapshot taken at mutation time.
+        case textWrite(absRow: Int, text: String)
+        /// A scroll-region shift. `count` > 0 ⇒ content moved up by `count` rows (new blanks at the
+        /// bottom of the region); `count` < 0 ⇒ moved down. `top`/`bottom` are visible-relative rows.
+        case scroll(top: Int, bottom: Int, count: Int)
+        /// An erase / invalidation; see `ClearScope`.
+        case clear(scope: ClearScope)
+        /// Geometry changed. A consumer treats this as a hard resync boundary (M4 → `full_resync`).
+        case resize(cols: Int, rows: Int)
+        /// Switched between the normal and alternate screen buffers.
+        case bufferSwitch(toAlternate: Bool)
+    }
+
+    /// One durable, copy-by-value record in the append-only event log.
+    public struct ChangeEvent: Equatable {
+        /// Monotonic per-session event sequence (`event_seq`); strictly increasing across the log.
+        public let seq: UInt64
+        /// Which buffer this event applies to.
+        public let bufferKind: BufferKind
+        /// What changed.
+        public let payload: ChangePayload
+    }
+
+    /// A full, copy-by-value snapshot of the visible screen plus the seq watermarks as of the
+    /// snapshot. A consumer pairs `snapshot()` with `changesSince(snapshot.eventSeq)` for an
+    /// idempotent incremental read (L0 floor + L1 deltas).
+    public struct ScreenSnapshot: Equatable {
+        public let eventSeq: UInt64
+        public let contentSeq: UInt64
+        public let driveSeq: UInt64
+        public let cols: Int
+        public let rows: Int
+        public let bufferKind: BufferKind
+        public let cursorCol: Int
+        public let cursorRow: Int          // visible-relative (buffer.y)
+        public let linesTop: Int
+        public let yBase: Int
+        public let rowsText: [String]      // visible rows, top → bottom, by value
+        public let rowAbsRows: [Int]       // eviction-stable absolute row index per visible row
+    }
+
+    /// Master switch. Default false ⇒ the substrate is inert and the terminal is byte-identical to
+    /// upstream. Flip to true (per session, from the bridge) to start capturing.
+    public var mutationCaptureEnabled = false
+    /// Ring bound on the retained event log; oldest events drop first. A consumer whose cursor falls
+    /// below `oldestRetainedSeq` has fallen behind and must full-resync (M4).
+    public var changeLogLimit = 4096
+
+    /// The append-only event log, in strictly increasing `seq` order. Read via `changesSince(_:)`.
+    public private(set) var changeLog: [ChangeEvent] = []
+    /// Master monotonic counter (`event_seq`): the seq of the most recently recorded event.
+    public private(set) var eventSeq: UInt64 = 0
+    /// Watermark: `event_seq` of the last cell-content change (text-write / scroll / clear /
+    /// buffer-switch). A consumer that only cares about content tracks this.
+    public private(set) var contentSeq: UInt64 = 0
+    /// Watermark: `event_seq` of the last mode / geometry / buffer change. EXCLUDES cursor-only
+    /// moves and pure content churn (a spinner repaint bumps `contentSeq`, never `driveSeq`) —
+    /// action leases bind to this so a repaint or cursor move never invalidates them.
+    public private(set) var driveSeq: UInt64 = 0
+
+    /// When true, the row-level capture funnels do NOT record. Set by structural ops that emit one
+    /// first-class event instead of N row rewrites (scroll/clear/resize/buffer-switch), and around
+    /// splice sections whose closures pass lines-array indices the visible-relative funnels can't read.
+    var captureSuppressed = false
+
+    /// Kind of the currently-active buffer (concrete `.normal` / `.alt`, never `.active`).
+    var currentBufferKind: BufferKind { isCurrentBufferAlternate ? .alt : .normal }
+
+    /// Append one event, assigning the next `event_seq` and advancing the requested watermarks.
+    private func appendChange(_ payload: ChangePayload, content: Bool, drive: Bool) {
+        eventSeq &+= 1
+        if content { contentSeq = eventSeq }
+        if drive { driveSeq = eventSeq }
+        changeLog.append(ChangeEvent(seq: eventSeq, bufferKind: currentBufferKind, payload: payload))
+        if changeLog.count > changeLogLimit {
+            changeLog.removeFirst(changeLog.count - changeLogLimit)
+        }
+    }
+
+    /// Capture one row's content by value at mutation time, keyed by its eviction-stable absolute
+    /// row. `lineIndex` is an index into `buffer.lines` (NOT visible-relative). Safe no-op when
+    /// disabled / suppressed / out of bounds.
+    func captureRow(lineIndex: Int) {
+        guard mutationCaptureEnabled, !captureSuppressed else { return }
+        let lines = buffer.lines
+        guard lineIndex >= 0, lineIndex < lines.count else { return }
+        let absRow = buffer.linesTop + lineIndex
+        let text = lines[lineIndex].translateToString(trimRight: true)
+        appendChange(.textWrite(absRow: absRow, text: text), content: true, drive: false)
+    }
+
+    /// Capture a visible-relative row (the common funnel case): converts to a lines-array index via
+    /// the active-screen anchor (`yBase`), then the eviction-stable absolute row is `linesTop + that`.
+    func captureVisibleRow(_ y: Int) {
+        guard mutationCaptureEnabled, !captureSuppressed, y >= 0 else { return }
+        captureRow(lineIndex: buffer.yBase + y)
+    }
+
+    // First-class structural recorders. These intentionally do NOT honor `captureSuppressed` — the
+    // structural op suppresses *row* capture and then calls one of these to emit its single event.
+    func recordScroll(top: Int, bottom: Int, count: Int) {
+        guard mutationCaptureEnabled else { return }
+        appendChange(.scroll(top: top, bottom: bottom, count: count), content: true, drive: false)
+    }
+    func recordClear(_ scope: ClearScope) {
+        guard mutationCaptureEnabled else { return }
+        appendChange(.clear(scope: scope), content: true, drive: false)
+    }
+    func recordResize(cols: Int, rows: Int) {
+        guard mutationCaptureEnabled else { return }
+        appendChange(.resize(cols: cols, rows: rows), content: false, drive: true)
+    }
+    func recordBufferSwitch(toAlternate: Bool) {
+        guard mutationCaptureEnabled else { return }
+        appendChange(.bufferSwitch(toAlternate: toAlternate), content: true, drive: true)
+    }
+
+    /// Run `body` with row-level capture suppressed, restoring the prior state after. Used by
+    /// structural ops that emit one first-class event instead of letting the row funnels fire.
+    @inline(__always)
+    func withCaptureSuppressed<T>(_ body: () throws -> T) rethrows -> T {
+        let saved = captureSuppressed
+        captureSuppressed = true
+        defer { captureSuppressed = saved }
+        return try body()
+    }
+
+    /// Oldest `seq` still retained in the log (nil if empty). A consumer whose cursor is below this
+    /// has been evicted and must full-resync.
+    public var oldestRetainedSeq: UInt64? { changeLog.first?.seq }
+
+    /// All retained events strictly after `seq`, in seq order. Pair with `snapshot()` for an
+    /// idempotent incremental read. If `seq < oldestRetainedSeq` the caller has fallen behind the
+    /// ring and must full-resync from a fresh snapshot (enforced as `full_resync` in M4).
+    public func changesSince(_ seq: UInt64) -> [ChangeEvent] {
+        guard mutationCaptureEnabled, !changeLog.isEmpty else { return [] }
+        // changeLog is sorted strictly increasing by seq → binary search for first seq > `seq`.
+        var lo = 0
+        var hi = changeLog.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if changeLog[mid].seq <= seq { lo = mid + 1 } else { hi = mid }
+        }
+        return Array(changeLog[lo ..< changeLog.count])
+    }
+
+    /// Drain and clear the log (a simple pull consumer; `changesSince` is the idempotent path).
+    public func drainChangeLog() -> [ChangeEvent] {
+        let out = changeLog
+        changeLog.removeAll(keepingCapacity: true)
+        return out
+    }
+
+    /// A full copy-by-value snapshot of the visible screen + current watermarks (the L0 floor).
+    public func snapshot() -> ScreenSnapshot {
+        let b = buffer
+        let top = b.yBase
+        var text: [String] = []
+        var abs: [Int] = []
+        text.reserveCapacity(rows)
+        abs.reserveCapacity(rows)
+        for i in 0 ..< rows {
+            let idx = top + i
+            if idx >= 0 && idx < b.lines.count {
+                text.append(b.lines[idx].translateToString(trimRight: true))
+            } else {
+                text.append("")
+            }
+            abs.append(b.linesTop + idx)
+        }
+        return ScreenSnapshot(
+            eventSeq: eventSeq, contentSeq: contentSeq, driveSeq: driveSeq,
+            cols: cols, rows: rows, bufferKind: currentBufferKind,
+            cursorCol: b.x, cursorRow: b.y, linesTop: b.linesTop, yBase: b.yBase,
+            rowsText: text, rowAbsRows: abs)
+    }
+    // ===== end AI-native incremental read substrate =====
+
     var userScrolling = false
     var lineFeedMode = false
     
@@ -816,6 +1037,10 @@ open class Terminal {
             altBuffer.clear ()
         }
         buffer = normalBuffer
+
+        // P1 substrate: a buffer switch is a first-class event (content context + mode change → bumps
+        // both contentSeq and driveSeq). The consumer re-snapshots the now-active normal buffer.
+        recordBufferSwitch (toAlternate: false)
     }
 
     /// Saves the alternate screen content to the normal buffer's scrollback,
@@ -887,6 +1112,10 @@ open class Terminal {
         altBuffer.fillViewportRows(attribute: fillAttr)
         buffer = altBuffer
         clearKittyImages(in: altBuffer, isAlternateBuffer: true)
+
+        // P1 substrate: entering the alternate screen (e.g. a full-screen TUI) is a first-class
+        // event (bumps contentSeq + driveSeq). The consumer re-snapshots the alt buffer.
+        recordBufferSwitch (toAlternate: true)
     }
     
     func setupTabStops (index: Int = -1)
@@ -2332,7 +2561,13 @@ open class Terminal {
             ? min (buffer.scrollBottom, max (buffer.scrollTop, buffer.y))
             : min (rows - 1, max (0, buffer.y))
 
+        // P1 substrate: this dirties the cursor row for cursor REPAINT only (no cell content
+        // changes), so it must not be captured — else a cursor-only move would wrongly bump
+        // content_seq. restrictCursor is also called by content ops, which capture their own rows.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         updateRange(borrowing: buffer, buffer.y)
+        captureSuppressed = savedSuppress
     }
 
     //
@@ -2347,7 +2582,12 @@ open class Terminal {
     func setCursor (col: Int, row: Int)
     {
         let buffer = self.buffer
+        // P1 substrate: dirties the OLD cursor row for repaint only (no content change) — suppress
+        // capture (restrictCursor() below dirties the new row, also suppressed). See restrictCursor.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         updateRange(borrowing: buffer, buffer.y)
+        captureSuppressed = savedSuppress
         if originMode {
             buffer.x = col + (usingMargins () ? buffer.marginLeft : 0)
             buffer.y = buffer.scrollTop + row
@@ -2473,6 +2713,11 @@ open class Terminal {
     {
         let p = pars.count == 0 ? 0 : pars [0]
         var j: Int
+        // P1 substrate: erase-in-display is ONE first-class `.clear` event, not per-row rewrites.
+        // Suppress the per-row captures the cases below emit (via updateRange / resetBufferLine),
+        // then record a single scoped clear after the switch.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         switch p {
         case 0:
             j = buffer.y
@@ -2520,6 +2765,18 @@ open class Terminal {
             break;
         default:
             break
+        }
+        captureSuppressed = savedSuppress
+        if mutationCaptureEnabled {
+            // CSI 3 J resets linesTop → prior absolute rows are invalidated (epoch-like); the
+            // consumer treats `.scrollback`/`.all` as a resync boundary (see ClearScope).
+            switch p {
+            case 0: recordClear (.below)
+            case 1: recordClear (.above)
+            case 2: recordClear (.all)
+            case 3: recordClear (.scrollback)
+            default: break
+            }
         }
     }
 
@@ -2619,6 +2876,11 @@ open class Terminal {
         let scrollBottomAbsolute = rows - 1 + buffer.yBase - scrollBottomRowsOffset + 1
         
         let ea = eraseAttr ()
+        // P1 substrate: suppress per-row capture during the splice/copy shift (its closures pass
+        // lines-array indices the visible-relative funnel can't read); the trailing range call below
+        // records every affected row correctly. Save/restore keeps it robust under any nesting.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         if marginMode {
             if buffer.x >= buffer.marginLeft && buffer.x <= buffer.marginRight {
                 let columnCount = buffer.marginRight-buffer.marginLeft+1
@@ -2627,10 +2889,10 @@ open class Terminal {
                     for i in (0..<rowCount).reversed() {
                         let src = buffer.lines [row+i]
                         let dst = buffer.lines [row+i+1]
-                        
+
                         dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
                     }
-                    
+
                     let last = buffer.lines [row]
                     last.fill (with: CharData (attribute: ea), atCol: buffer.marginLeft, len: columnCount)
                 }
@@ -2646,6 +2908,7 @@ open class Terminal {
                 buffer.lines.splice (start: row, deleteCount: 0, items: [newLine], change: { line in updateRange (line) })
             }
         }
+        captureSuppressed = savedSuppress
         // this.maxRange();
         updateRange (startLine: buffer.y, endLine: buffer.scrollBottom)
         // A restricted region leaves stale pixels / a bottom-edge ghost outside
@@ -4859,6 +5122,10 @@ open class Terminal {
         let p = min (max (pars.count == 0 ? 1 : pars [0], 1), rows)
         let da = CharData.defaultAttr
 
+        // P1 substrate: suppress per-row capture during the shift; the trailing range call records
+        // every affected row correctly (see cmdInsertLines for the rationale).
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         if marginMode {
             let row = buffer.scrollTop + buffer.yBase
 
@@ -4883,6 +5150,7 @@ open class Terminal {
                                      change: { line in updateRange (line) })
             }
         }
+        captureSuppressed = savedSuppress
         // this.maxRange();
         refreshScrolledRegion(top: buffer.scrollTop, bottom: buffer.scrollBottom, canBlit: false)
     }
@@ -4895,6 +5163,10 @@ open class Terminal {
         let p = min (rows*2, max (pars.count == 0 ? 1 : pars [0], 1))
         let da = CharData.defaultAttr
 
+        // P1 substrate: suppress per-row capture during the shift; the trailing range call records
+        // every affected row correctly (see cmdInsertLines for the rationale).
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         if marginMode {
             let row = buffer.scrollTop + buffer.yBase
 
@@ -4904,7 +5176,7 @@ open class Terminal {
                 for i in 0..<(rowCount) {
                     let src = buffer.lines [row+i+1]
                     let dst = buffer.lines [row+i]
-                    
+
                     dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
                 }
                 let last = buffer.lines [row+rowCount]
@@ -4919,6 +5191,7 @@ open class Terminal {
                                      change: { line in updateRange (line) })
             }
         }
+        captureSuppressed = savedSuppress
         // this.maxRange();
         refreshScrolledRegion(top: buffer.scrollTop, bottom: buffer.scrollBottom, canBlit: false)
     }
@@ -4965,7 +5238,11 @@ open class Terminal {
         var j = rows - 1 - buffer.scrollBottom
         j = rows - 1 + buffer.yBase - j
         let ea = eraseAttr ()
-        
+
+        // P1 substrate: suppress per-row capture during the shift; the trailing range call records
+        // every affected row correctly (see cmdInsertLines for the rationale).
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         if marginMode {
             if buffer.x >= buffer.marginLeft && buffer.x <= buffer.marginRight {
                 let columnCount = buffer.marginRight-buffer.marginLeft+1
@@ -4974,10 +5251,10 @@ open class Terminal {
                     for i in 0..<(rowCount) {
                         let src = buffer.lines [row+i+1]
                         let dst = buffer.lines [row+i]
-                        
+
                         dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
                     }
-                    
+
                     let last = buffer.lines [row+rowCount]
                     last.fill (with: CharData (attribute: ea), atCol: buffer.marginLeft, len: columnCount)
                 }
@@ -4994,7 +5271,8 @@ open class Terminal {
                 }
             }
         }
-        
+        captureSuppressed = savedSuppress
+
         // this.maxRange();
         updateRange (startLine: buffer.y, endLine: buffer.scrollBottom)
         // A restricted region leaves stale pixels / a bottom-edge ghost outside
@@ -5169,6 +5447,12 @@ open class Terminal {
                 refreshEnd = y
             }
         }
+
+        // P1 substrate: capture this visible-relative row by value at mutation time. Zero-cost when
+        // disabled; the `!scrolling` guard skips the scroll() path (recorded as a `.scroll` event).
+        if mutationCaptureEnabled && !scrolling {
+            captureVisibleRow (y)
+        }
     }
 
     func updateRange (borrowing buffer: borrowing Buffer, _ y: Int, scrolling: Bool = false)
@@ -5193,21 +5477,49 @@ open class Terminal {
                 refreshEnd = y
             }
         }
+
+        // P1 substrate: same capture for the hot (borrowing) funnel. The `mutationCaptureEnabled`
+        // short-circuit keeps the disabled path free of the `self.buffer` ARC touch.
+        if mutationCaptureEnabled && !scrolling {
+            captureVisibleRow (y)
+        }
     }
 
     func updateRange (startLine: Int, endLine: Int, scrolling: Bool = false)
     {
-        updateRange (startLine, scrolling: scrolling)
-        updateRange (endLine, scrolling: scrolling)
+        if mutationCaptureEnabled && !captureSuppressed && !scrolling {
+            // Funnel completeness (findings §5(c)): mark EVERY mutated row, not just the two
+            // endpoints. The inner endpoint calls only widen the renderer's min/max bounds, so we
+            // suppress their capture and record each row in [startLine, endLine] exactly once here.
+            withCaptureSuppressed {
+                updateRange (startLine, scrolling: scrolling)
+                updateRange (endLine, scrolling: scrolling)
+            }
+            if startLine <= endLine {
+                for y in startLine ... endLine {
+                    captureVisibleRow (y)
+                }
+            }
+        } else {
+            updateRange (startLine, scrolling: scrolling)
+            updateRange (endLine, scrolling: scrolling)
+        }
     }
-    
+
     public func updateFullScreen ()
     {
         refreshStart = 0
         refreshEnd = rows
-        
+
         scrollInvariantRefreshStart = buffer.yDisp
         scrollInvariantRefreshEnd = buffer.yDisp + rows
+
+        // P1 substrate: a full-screen invalidation (RIS / Cmd-K clear / reflow). Signal the consumer
+        // to re-snapshot the visible screen — safe, never a silent desync (Invariant 1). Gated by
+        // `!captureSuppressed` so it does not double-fire inside another structural op.
+        if mutationCaptureEnabled && !captureSuppressed {
+            recordClear (.all)
+        }
     }
     
     /**
@@ -5419,6 +5731,12 @@ open class Terminal {
         let bMarginRight = buffer.marginRight
         let hasScrollback = buffer.hasScrollback
 
+        // P1 substrate: a scroll is ONE first-class `.scroll` event, not N row rewrites. Suppress
+        // per-row capture for the shift body (splice closures pass lines-array indices; the alt-buffer
+        // path also calls updateRange(startLine:endLine:)); emit the scroll event at the normal end.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
+
         // Follow new output to the bottom only when the viewport was already at
         // the bottom. Once the user has scrolled up (yDisp < yBase) the view
         // stays put so they can read older content; scrolling back to the bottom
@@ -5517,6 +5835,7 @@ open class Terminal {
             // This can happen when the buffer has been trimmed and yBase is stale
             guard bottomRow < lines.count else {
                 print ("scroll: bottomRow \(bottomRow) >= lines.count \(lines.count), state: yBase=\(buffer.yBase) scrollTop=\(scrollTop) scrollBottom=\(scrollBottom) isAlternate=\(isCurrentBufferAlternate)")
+                captureSuppressed = savedSuppress  // P1: no scroll happened — restore, emit nothing.
                 return
             }
 
@@ -5541,6 +5860,15 @@ open class Terminal {
         updateRange (scrollBottom, scrolling: true)
 
         refreshScrolledRegion(top: scrollTop, bottom: scrollBottom, canBlit: hasScrollback)
+
+        // P1 substrate: restore capture and record the scroll as one first-class event. `count: 1`
+        // = content moved up by one row within [scrollTop, scrollBottom] (a new blank at the bottom;
+        // in the normal buffer the displaced top row also goes to scrollback). `bufferKind` on the
+        // event distinguishes alt-buffer in-place shifts from normal-buffer scrollback scrolls.
+        captureSuppressed = savedSuppress
+        if mutationCaptureEnabled {
+            recordScroll (top: scrollTop, bottom: scrollBottom, count: 1)
+        }
 
         if buffer.hasAnyImages {
             updateKittyRelativePlacementsForCurrentBuffer()
@@ -5650,6 +5978,11 @@ open class Terminal {
         if newCols == self.cols && newRows == self.rows {
             return
         }
+        // P1 substrate: a resize is a hard geometry boundary — ONE first-class `.resize` event
+        // (bumps driveSeq, NOT contentSeq) that the consumer maps to `full_resync`. Suppress the
+        // per-row captures the reflow/refresh below would otherwise emit.
+        let savedSuppress = captureSuppressed
+        if mutationCaptureEnabled { captureSuppressed = true }
         endSynchronizedOutput ()
         let oldCols = self.cols
         resizeBuffers(newColumns: newCols, newRows: newRows)
@@ -5660,6 +5993,10 @@ open class Terminal {
         normalBuffer.setupTabStops (index: oldCols, tabStopWidth: tabStopWidth)
         altBuffer.setupTabStops (index: oldCols, tabStopWidth: tabStopWidth)
         refresh (startRow: 0, endRow: self.rows - 1)
+        captureSuppressed = savedSuppress
+        if mutationCaptureEnabled {
+            recordResize (cols: newCols, rows: newRows)
+        }
     }
     
     /**

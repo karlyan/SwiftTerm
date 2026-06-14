@@ -406,4 +406,32 @@ final class MutationEventLogTests {
         let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
         #expect(recon == final.rowsText)
     }
+
+    // (e) DECFRA (fill rectangular area, CSI Pc;Pt;Pl;Pb;Pr $ x) mutates every rectangle row with no
+    // updateRange in upstream — capture must mark/record the whole rectangle. Reconstruct exactly.
+    @Test func decfraFillRectangleReconstructsEveryRow() {
+        let t = makeTerminal(cols: 10, rows: 5, scrollback: 100)
+        let baseline = t.snapshot()
+        // Fill rows 2..4, cols 2..4 (1-based) with 'X' (0x58) → 0-based rows 1..3, cols 1..3.
+        t.feed(text: "\u{1b}[88;2;2;4;4$x")
+        let final = t.snapshot()
+        #expect(final.rowsText != baseline.rowsText)         // the op actually mutated content
+        #expect(final.rowsText[2].contains("XXX"))           // an interior rectangle row got filled
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(recon == final.rowsText)
+    }
+
+    // (f) DECIC (insert columns, CSI Pn ' }) mutates every row in scrollTop...scrollBottom with no
+    // updateRange in upstream — capture must mark/record the whole region. Reconstruct exactly.
+    @Test func decicInsertColumnsReconstructsEveryRow() {
+        let t = makeTerminal(cols: 10, rows: 4, scrollback: 0)
+        t.feed(text: "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD")
+        t.feed(text: "\u{1b}[1;1H")                          // cursor to row0,col0
+        let baseline = t.snapshot()
+        t.feed(text: "\u{1b}[2'}")                           // insert 2 columns at col0 in every region row
+        let final = t.snapshot()
+        #expect(final.rowsText != baseline.rowsText)         // every region row shifted right by 2
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(recon == final.rowsText)
+    }
 }

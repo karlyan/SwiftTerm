@@ -311,4 +311,99 @@ final class MutationEventLogTests {
         // The L0 snapshot floor is always available regardless of the flag (it is a live read, not capture).
         #expect(t.snapshot().rows == 8)
     }
+
+    // MARK: - reconstruction harness (proves NO content is silently lost across wraps/scrolls)
+
+    /// Replay an event window onto an absolute-row model seeded from `baseline`, then project to the
+    /// final visible window. Models the M4 consumer: text-writes set rows by eviction-stable absRow.
+    /// A full-screen `.scroll` (scrollTop==0, the only kind these tests produce) advances the viewport
+    /// and trims, but never renumbers surviving content — absRows are stable — so it is a no-op on the
+    /// absRow model. The whole point: because every touched row is captured at its STABLE absRow, the
+    /// reconstruction is order-independent (stale pre-write captures are simply superseded by absRow).
+    /// Tests take the baseline AFTER any clear/resize/buffer-switch so the window holds only
+    /// text-writes + scrolls.
+    private func reconstruct(baseline: Terminal.ScreenSnapshot,
+                             events: [Terminal.ChangeEvent],
+                             final: Terminal.ScreenSnapshot) -> [String] {
+        var model: [Int: String] = [:]
+        for (i, abs) in baseline.rowAbsRows.enumerated() { model[abs] = baseline.rowsText[i] }
+        for ev in events {
+            switch ev.payload {
+            case let .textWrite(absRow, text):
+                model[absRow] = text
+            case .scroll:
+                break // full-screen scroll keeps absRows stable → viewport advance, no model change
+            case .clear, .resize, .bufferSwitch:
+                break // not exercised between baseline and final in these tests
+            }
+        }
+        return final.rowAbsRows.map { model[$0] ?? "" }
+    }
+
+    // (a) A line wrapping across >=2 rows mid-screen reconstructs EXACTLY (no scroll).
+    @Test func wrappingLineMidScreenReconstructsExactly() {
+        let t = makeTerminal(cols: 10, rows: 6, scrollback: 100)
+        let baseline = t.snapshot()
+        // 25 chars at row 1 (1-based row 2) → wraps across rows 1,2,3.
+        t.feed(text: "\u{1b}[2;1HABCDEFGHIJKLMNOPQRSTUVWXY")
+        let final = t.snapshot()
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        // Sanity: the write really did wrap onto interior rows (this is what regressed before the fix).
+        #expect(final.rowsText[2] == "KLMNOPQRST")
+        #expect(recon == final.rowsText)
+    }
+
+    // (b) A wrapping write at the bottom that triggers scroll reconstructs EXACTLY (normal buffer).
+    @Test func wrappingScrollNormalBufferReconstructsExactly() {
+        let t = makeTerminal(cols: 10, rows: 4, scrollback: 100)
+        t.feed(text: "L0\r\nL1\r\nL2\r\nL3")          // fill; cursor at bottom row
+        let baseline = t.snapshot()
+        t.feed(text: "\rABCDEFGHIJKLMNOPQRSTUVWXY")    // long line at the bottom → wraps + scrolls
+        let final = t.snapshot()
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(recon == final.rowsText)
+    }
+
+    // (b-alt) The same at the bottom of the ALTERNATE buffer — the ordering-critical case: content
+    // written then scrolled in place must be captured BEFORE the scroll shifts it.
+    @Test func wrappingScrollAltBufferReconstructsExactly() {
+        let t = makeTerminal(cols: 10, rows: 4, scrollback: 100)
+        t.feed(text: "\u{1b}[?1049h")                  // enter alternate screen
+        t.feed(text: "L0\r\nL1\r\nL2\r\nL3")
+        let baseline = t.snapshot()
+        #expect(baseline.bufferKind == .alt)
+        t.feed(text: "\rABCDEFGHIJKLMNOPQRSTUVWXY")
+        let final = t.snapshot()
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(recon == final.rowsText)
+    }
+
+    // (c) insertMode + wrap reconstructs EXACTLY (forces the per-char insertCharacter wrap path).
+    @Test func insertModeWrapReconstructsExactly() {
+        let t = makeTerminal(cols: 10, rows: 6, scrollback: 100)
+        let baseline = t.snapshot()
+        t.feed(text: "\u{1b}[4h")                       // IRM insert mode on
+        t.feed(text: "\u{1b}[2;1HABCDEFGHIJKLMNOPQRSTUVWXY")
+        let final = t.snapshot()
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(final.rowsText[1] == "ABCDEFGHIJ")
+        #expect(final.rowsText[2] == "KLMNOPQRST")
+        #expect(recon == final.rowsText)
+    }
+
+    // (d) DECBI (ESC 6) columnScroll mutates EVERY row in the region — reconstruct exactly.
+    @Test func columnScrollDECBIReconstructsEveryRow() {
+        let t = makeTerminal(cols: 10, rows: 4, scrollback: 0)
+        t.feed(text: "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD")
+        t.feed(text: "\u{1b}[1;1H")                     // cursor to row0,col0 (left margin)
+        let baseline = t.snapshot()
+        t.feed(text: "\u{1b}6")                         // DECBI → columnScroll inserts a cell per region row
+        let final = t.snapshot()
+        // The op actually mutated every region row (content shifted right by one column).
+        #expect(final.rowsText != baseline.rowsText)
+        #expect(final.rowsText[1] == " BBBBB")
+        #expect(final.rowsText[2] == " CCCCC")
+        let recon = reconstruct(baseline: baseline, events: t.changesSince(baseline.eventSeq), final: final)
+        #expect(recon == final.rowsText)
+    }
 }

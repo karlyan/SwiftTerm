@@ -14,6 +14,7 @@ final class TerminalFindBarView: NSVisualEffectView, NSSearchFieldDelegate {
     var onOptionsChanged: ((SearchOptions) -> Void)?
 
     private let searchField = NSSearchField()
+    private let matchLabel = NSTextField(labelWithString: "")
     private let previousButton = NSButton()
     private let nextButton = NSButton()
     private let closeButton = NSButton()
@@ -24,6 +25,22 @@ final class TerminalFindBarView: NSVisualEffectView, NSSearchFieldDelegate {
     var searchText: String {
         get { searchField.stringValue }
         set { searchField.stringValue = newValue }
+    }
+
+    /// Match counter shown between the field and the arrows: "3/17", "No results"
+    /// for a non-empty term with no match, and blank while the term is empty.
+    func setMatchSummary(index: Int, total: Int, hasTerm: Bool) {
+        guard hasTerm else {
+            matchLabel.stringValue = ""
+            return
+        }
+        if total == 0 {
+            matchLabel.stringValue = "No results"
+        } else if index == 0 {
+            matchLabel.stringValue = "\(total)"
+        } else {
+            matchLabel.stringValue = "\(index)/\(total)"
+        }
     }
 
     var options: SearchOptions {
@@ -81,8 +98,15 @@ final class TerminalFindBarView: NSVisualEffectView, NSSearchFieldDelegate {
         configureOptionButton(regexButton, tooltip: "Regex")
         configureOptionButton(wholeWordButton, tooltip: "Whole Word")
 
+        matchLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        matchLabel.textColor = .secondaryLabelColor
+        matchLabel.alignment = .right
+        matchLabel.translatesAutoresizingMaskIntoConstraints = false
+        matchLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         let stack = NSStackView(views: [
             searchField,
+            matchLabel,
             previousButton,
             nextButton,
             caseSensitiveButton,

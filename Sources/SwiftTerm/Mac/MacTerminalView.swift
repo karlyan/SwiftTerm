@@ -2359,6 +2359,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         } else {
             _ = findPrevious(term, options: options)
         }
+        updateFindBarMatchSummary(term: term, options: options)
+    }
+
+    /// Refresh the find bar's "3/17" counter for the current match. Called after
+    /// every action that can move or invalidate the match.
+    private func updateFindBarMatchSummary(term: String, options: SearchOptions) {
+        guard let findBar, !findBar.isHidden else { return }
+        guard !term.isEmpty else {
+            findBar.setMatchSummary(index: 0, total: 0, hasTerm: false)
+            return
+        }
+        let summary = searchMatchSummary(term, options: options)
+        findBar.setMatchSummary(index: summary.index, total: summary.total, hasTerm: true)
     }
 
     private func setFindPasteboardFromSelection() {
@@ -2437,16 +2450,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         findBarTerm = term
         if term.isEmpty {
             clearSearch()
+            updateFindBarMatchSummary(term: term, options: findBarOptions)
             return
         }
         updateFindPasteboard(term)
         _ = findNext(term, options: findBarOptions)
+        updateFindBarMatchSummary(term: term, options: findBarOptions)
     }
 
     private func handleFindBarOptionsChanged(_ options: SearchOptions) {
         findBarOptions = options
         if !findBarTerm.isEmpty {
             _ = findNext(findBarTerm, options: options)
+            updateFindBarMatchSummary(term: findBarTerm, options: options)
         }
     }
     

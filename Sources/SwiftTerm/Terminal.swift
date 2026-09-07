@@ -574,6 +574,11 @@ open class Terminal {
     ///     an emoji, or `e` + a combining accent — and the cluster table lives here.
     ///   * `skipNullCellsFollowingWide`, so the placeholder cell trailing a wide glyph is
     ///     not mistaken downstream for real layout whitespace (`中文` → `中 文`).
+    ///   * an UNWRITTEN cell rendered as a space rather than NUL. A cursor jump
+    ///     (`ESC[15G`) leaves real gaps that were never written to; NUL survives to the
+    ///     consumer, where ANSI cleaning deletes it and the layout collapses
+    ///     (`中文     X` → `中文X`). This is distinct from the wide-glyph placeholder
+    ///     above: that one is a lie about width, this one is genuine blank space.
     ///
     /// Both were measured by an external client reading a bridge built on this fork, and
     /// both were present in one path while absent from another — so the same output read
@@ -581,7 +586,8 @@ open class Terminal {
     public func capturedRowText(_ line: BufferLine) -> String {
         line.translateToString(trimRight: true, skipNullCellsFollowingWide: true,
                                characterProvider: { [weak self] cell in
-            self?.getCharacter(for: cell) ?? cell.getCharacter()
+            let c = self?.getCharacter(for: cell) ?? cell.getCharacter()
+            return c == "\u{0}" ? " " : c
         })
     }
 
@@ -6482,7 +6488,17 @@ open class Terminal {
             if stripAlternateScreen && bufferLine.fromAlternateScreen {
                 continue
             }
-            let str = bufferLine.translateToString(trimRight: true)
+            // Same rendering as the live read paths — this one persists, so a
+            // difference here means the record disagrees with what was on screen.
+            //
+            // It was the fifth copy of this call and the one I missed: `captureRow`,
+            // `snapshot`, the bridge renderer and the benchmark ground truth were fixed
+            // together, while `getBufferAsData` — which feeds the scrollback saved on
+            // stop — kept the bare form. So a session read correctly while live and lost
+            // its emoji, combining marks and cursor-positioned spaces the moment it
+            // stopped. An external client caught it by reading the same two lines either
+            // side of `terminal_stop`.
+            let str = capturedRowText(bufferLine)
             if let encoded = str.data(using: encoding) {
                 result.append (encoded)
                 result.append (newLine)

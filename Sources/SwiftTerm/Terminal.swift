@@ -564,12 +564,46 @@ open class Terminal {
     /// Capture one row's content by value at mutation time, keyed by its eviction-stable absolute
     /// row. `lineIndex` is an index into `buffer.lines` (NOT visible-relative). Safe no-op when
     /// disabled / suppressed / out of bounds.
+    /// Row text as every capture / snapshot path must render it.
+    ///
+    /// Single source of truth on purpose. This rendering has two non-default choices, and
+    /// each was a silent data-loss bug when a caller forgot one:
+    ///
+    ///   * `characterProvider` backed by `getCharacter(for:)`, because the default
+    ///     `CharData.getCharacter()` returns a SPACE for any extended grapheme cluster —
+    ///     an emoji, or `e` + a combining accent — and the cluster table lives here.
+    ///   * `skipNullCellsFollowingWide`, so the placeholder cell trailing a wide glyph is
+    ///     not mistaken downstream for real layout whitespace (`中文` → `中 文`).
+    ///
+    /// Both were measured by an external client reading a bridge built on this fork, and
+    /// both were present in one path while absent from another — so the same output read
+    /// differently depending on which call it came through.
+    public func capturedRowText(_ line: BufferLine) -> String {
+        line.translateToString(trimRight: true, skipNullCellsFollowingWide: true,
+                               characterProvider: { [weak self] cell in
+            self?.getCharacter(for: cell) ?? cell.getCharacter()
+        })
+    }
+
     func captureRow(lineIndex: Int) {
         guard mutationCaptureEnabled, !captureSuppressed else { return }
         let lines = buffer.lines
         guard lineIndex >= 0, lineIndex < lines.count else { return }
         let absRow = buffer.linesTop + lineIndex
-        let text = lines[lineIndex].translateToString(trimRight: true)
+        // Render with the terminal's own cluster table and without the wide-glyph NUL
+        // spacers.
+        //
+        // A bare `translateToString(trimRight:)` produced two distinct corruptions in the
+        // captured text, both found by an external client reading a bridge built on this:
+        //
+        //   * `CharData.getCharacter()` (the default provider) returns a SPACE for any
+        //     extended grapheme cluster — an emoji, or `e` + a combining accent — because
+        //     such a cluster is not one Unicode scalar. Characters vanished with no
+        //     indication. The cluster table is held here, on the Terminal.
+        //   * the NUL cell that trails a wide glyph came through as-is and was later
+        //     mapped to a space downstream, so `中文` arrived as `中 文`: a placeholder
+        //     became indistinguishable from real layout whitespace.
+        let text = capturedRowText(lines[lineIndex])
         appendChange(.textWrite(absRow: absRow, text: text), content: true, drive: false)
     }
 
@@ -646,7 +680,7 @@ open class Terminal {
         for i in 0 ..< rows {
             let idx = top + i
             if idx >= 0 && idx < b.lines.count {
-                text.append(b.lines[idx].translateToString(trimRight: true))
+                text.append(capturedRowText(b.lines[idx]))
             } else {
                 text.append("")
             }

@@ -2,14 +2,24 @@
 import CoreGraphics
 import CoreText
 
+/// What rasterizing a glyph produced.
+enum GlyphRaster {
+    /// The glyph has no ink (a space, most blank cells). This is a property of
+    /// the font and glyph, so it can be remembered like a bitmap.
+    case blank
+    case bitmap(GlyphBitmap)
+}
+
 final class CoreTextGlyphRasterizer {
     var fontSmoothing: Bool = true
 
-    func rasterize(font: CTFont, glyph: CGGlyph) -> GlyphBitmap? {
+    /// Nil means drawing failed and may succeed on another try; a blank glyph is
+    /// `.blank`, not nil.
+    func rasterize(font: CTFont, glyph: CGGlyph) -> GlyphRaster? {
         var glyphVar = glyph
         let rect = CTFontGetBoundingRectsForGlyphs(font, .default, &glyphVar, nil, 1)
         if rect.width <= 0 || rect.height <= 0 {
-            return nil
+            return .blank
         }
 
         let minX = floor(rect.origin.x)
@@ -19,7 +29,7 @@ final class CoreTextGlyphRasterizer {
         let width = Int(maxX - minX)
         let height = Int(maxY - minY)
         if width <= 0 || height <= 0 {
-            return nil
+            return .blank
         }
 
         let bytesPerPixel = 4
@@ -80,11 +90,11 @@ final class CoreTextGlyphRasterizer {
             idx += 4
         }
 
-        return GlyphBitmap(width: width,
-                           height: height,
-                           bearing: CGPoint(x: minX, y: minY),
-                           pixels: pixels,
-                           isColor: isColor)
+        return .bitmap(GlyphBitmap(width: width,
+                                   height: height,
+                                   bearing: CGPoint(x: minX, y: minY),
+                                   pixels: pixels,
+                                   isColor: isColor))
     }
 }
 #endif

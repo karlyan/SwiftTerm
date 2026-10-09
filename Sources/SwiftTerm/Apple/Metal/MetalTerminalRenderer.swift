@@ -1693,8 +1693,17 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         if let cached = glyphCache[key] {
             return cached
         }
-        guard let bitmap = rasterizer.rasterize(font: font, glyph: glyph) else {
+        guard let raster = rasterizer.rasterize(font: font, glyph: glyph) else {
             return nil
+        }
+        guard case .bitmap(let bitmap) = raster else {
+            // Remember blank glyphs too. Every blank cell shapes to one, and
+            // without an entry each row rebuild asked CoreText for its bounds
+            // again. Zero size: callers skip it, and it holds no atlas space.
+            let blank = GlyphEntry(region: AtlasRegion(x: 0, y: 0, width: 0, height: 0),
+                                   size: .zero, bearing: .zero, isColor: false, atlasKind: .grayscale)
+            glyphCache[key] = blank
+            return blank
         }
         let atlasKind: GlyphAtlasKind = bitmap.isColor ? .color : .grayscale
         let atlas = atlasKind == .color ? colorAtlas : grayscaleAtlas

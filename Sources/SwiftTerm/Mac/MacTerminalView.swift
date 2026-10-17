@@ -310,8 +310,11 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     /// snapshots and tests when the main run loop cannot process an on-demand
     /// `MTKView` draw before the snapshot starts.
     public func drawMetalFrameNow() {
-        guard useMetalRenderer else { return }
-        metalView?.draw()
+        guard useMetalRenderer, let metalView else { return }
+        metalView.draw()
+        if isHiddenOrHasHiddenAncestor {
+            releaseDrawables(of: metalView)
+        }
     }
 #endif
 
@@ -494,8 +497,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             // background rather than a clear frame. Without this, a freshly
             // enabled Metal view shows one transparent frame before its first
             // render — which on a non-opaque window flashes the desktop through.
-            mtkView.draw()
-            mtkView.setNeedsDisplay(mtkView.bounds)
+            drawFirstMetalFrame(mtkView)
         } else {
             retireMetalRenderer(metalRenderer)
             metalView?.delegate = nil
@@ -514,6 +516,32 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     func metalRenderingScaleFactor() -> CGFloat {
         max(1, metalScaleFactorOverride ?? backingScaleFactor())
+    }
+
+    /// A hidden terminal keeps no full-size drawables: each one is a
+    /// window-sized IOSurface, and a host that keeps many terminals mounted
+    /// but hidden would otherwise hold three per terminal. 1x1 rather than
+    /// zero, so a stray draw still gets a drawable. The renderer restores the
+    /// real size at the top of every frame (`MetalTerminalRenderer.draw(in:)`)
+    /// before it takes a drawable, so the first frame after unhiding is full
+    /// size. The layer keeps its last presented frame, which is what shows
+    /// until that frame lands.
+    private func releaseDrawables(of view: MTKView) {
+        view.releaseDrawables()
+        view.drawableSize = CGSize(width: 1, height: 1)
+    }
+
+    /// The synchronous first frame a new Metal view needs so it never shows up
+    /// empty. A hidden terminal skips it: nobody sees that frame, and drawing
+    /// it would grow back the drawables `viewDidHide` released, with no
+    /// further hide to release them again. Unhiding draws it instead.
+    private func drawFirstMetalFrame(_ view: MTKView) {
+        if isHiddenOrHasHiddenAncestor {
+            releaseDrawables(of: view)
+            return
+        }
+        view.draw()
+        view.setNeedsDisplay(view.bounds)
     }
 
     /// Builds an MTKView configured for terminal rendering. Used by both
@@ -617,8 +645,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // `setNeedsDisplay` belt-and-braces in case the synchronous draw bails
         // out (e.g. the new layer hasn't acquired its first drawable yet).
         insertMetalView(newView, replacing: oldView)
-        newView.draw()
-        newView.setNeedsDisplay(newView.bounds)
+        drawFirstMetalFrame(newView)
 
         let oldRenderer = metalRenderer
         oldView.delegate = nil
@@ -743,8 +770,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         oldView.delegate = nil
         oldView.removeFromSuperview()
 
-        newView.draw()
-        newView.setNeedsDisplay(newView.bounds)
+        drawFirstMetalFrame(newView)
     }
 
     private func retireMetalRenderer(_ renderer: MetalTerminalRenderer?) {
@@ -826,11 +852,22 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 #endif
     }
 
+    open override func viewDidHide() {
+        super.viewDidHide()
+#if canImport(MetalKit)
+        if let metalView {
+            releaseDrawables(of: metalView)
+        }
+#endif
+    }
+
     open override func viewDidUnhide() {
         super.viewDidUnhide()
 #if canImport(MetalKit)
-        if isMetalRendererEligibleForRetry {
-            requestMetalDisplay()
+        // Synchronously: a terminal hidden since its Metal view was made has
+        // never presented a frame, so its layer is empty until one lands.
+        if isMetalRendererEligibleForRetry, let metalView {
+            drawFirstMetalFrame(metalView)
         }
 #endif
     }

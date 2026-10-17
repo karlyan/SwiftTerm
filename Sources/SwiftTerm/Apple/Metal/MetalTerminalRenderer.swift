@@ -403,7 +403,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // The view already updates drawableSize; avoid feedback loops.
+        // draw(in:) sets drawableSize itself every frame; avoid feedback loops.
     }
 
     func draw(in view: MTKView) {
@@ -434,6 +434,8 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
 #else
         let scale = terminalView.backingScaleFactor()
 #endif
+        // Unconditional, and before the drawable is taken: a hidden macOS
+        // terminal shrinks its drawable to 1x1, and this is what grows it back.
         view.drawableSize = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
         let cursorStyle = terminalView.terminal.options.cursorStyle
         let shouldBlink = isBlinkStyle(cursorStyle)

@@ -195,6 +195,29 @@ private func cachedCTLine(_ text: NSAttributedString) -> CTLine {
 }
 
 // Holds the information used to render a line
+/// Everything `buildAttributedString(row:line:cols:)` reads for a row besides the
+/// line's own cells. Equal cells and an equal key produce the same line info, so
+/// a renderer can reuse what it built from it (`MetalTerminalRenderer`).
+///
+/// Keep this in step with `buildAttributedString`: an input it starts reading
+/// that is missing here makes reused rows draw stale.
+struct RowDecorationKey: Equatable {
+    /// Resolved colors and fonts behind `getAttributes`.
+    let attributeEpoch: UInt64
+    let selection: Range<Int>?
+    let selectedBackground: TTColor
+    let selectedForeground: TTColor
+    let defaultForeground: TTColor
+    let font: TTFont
+    let customBlockGlyphs: Bool
+    /// Only when the line has blinking cells; otherwise the blink phase cannot
+    /// change what is drawn.
+    let blinkVisible: Bool?
+    let linkMode: LinkHighlightMode
+    let commandActive: Bool
+    let linkHighlight: Range<Int>?
+}
+
 struct ViewLineInfo {
     // Contains the generated segments for this line
     var segments: [ViewLineSegment]
@@ -289,6 +312,7 @@ extension TerminalView {
     {
         self.attributes = [:]
         self.urlAttributes = [:]
+        attributeEpoch &+= 1
         self.colors = Array(repeating: nil, count: 256)
         self.trueColors = [:]
     }
@@ -567,6 +591,7 @@ extension TerminalView {
     {
         urlAttributes = [:]
         attributes = [:]
+        attributeEpoch &+= 1
         clearCGColorCache()
 
 #if os(macOS)
@@ -1048,6 +1073,25 @@ extension TerminalView {
     //
     // Given a line of text with attributes, returns column-aware segments that can be drawn later.
     //
+    func rowDecorationKey(row: Int, line: BufferLine, cols: Int) -> RowDecorationKey {
+        var hasBlink = false
+        for col in 0..<min(cols, line.count) where line[col].attribute.style.contains(.blink) {
+            hasBlink = true
+            break
+        }
+        return RowDecorationKey(attributeEpoch: attributeEpoch,
+                                selection: selectedColumnsRange(row: row, cols: cols),
+                                selectedBackground: selectedTextBackgroundColor,
+                                selectedForeground: selectedTextForegroundColor,
+                                defaultForeground: effectiveNativeForegroundColor,
+                                font: fontSet.normal,
+                                customBlockGlyphs: customBlockGlyphs,
+                                blinkVisible: hasBlink ? textBlinkVisible : nil,
+                                linkMode: linkHighlightMode,
+                                commandActive: commandActive,
+                                linkHighlight: linkHighlightRange?.first(where: { $0.row == row })?.range)
+    }
+
     func buildAttributedString (row: Int, line: BufferLine, cols: Int) -> ViewLineInfo
     {
         var segments: [ViewLineSegment] = []

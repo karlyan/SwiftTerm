@@ -266,6 +266,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     // of attributes for an NSAttributedString
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
+    /// Bumped whenever the attribute caches above are cleared (colors or fonts
+    /// changed); see `RowDecorationKey`.
+    var attributeEpoch: UInt64 = 0
 
     // Timer to display the terminal buffer
     var link: CADisplayLink!

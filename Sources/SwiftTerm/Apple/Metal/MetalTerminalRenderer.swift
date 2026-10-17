@@ -127,6 +127,17 @@ struct RowCacheEntry {
     var bidiParagraphRevision: Int
     var data: RowDrawData?
     var buffers: RowDrawBuffers?
+    /// What the row was built from, when that fully determines it (no images).
+    var reuse: RowReuseKey? = nil
+}
+
+/// The inputs a cached row was built from: its cells and every other thing its
+/// line info depends on. Equal inputs draw the same row.
+struct RowReuseKey {
+    let cells: ContiguousArray<CharData>
+    let renderMode: BufferLine.RenderLineMode
+    let bidiState: BidiPresentationState
+    let decoration: RowDecorationKey
 }
 
 struct FrameDrawData {
@@ -278,8 +289,8 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
 #if DEBUG
     private var debugFrameCount = 0
     private var debugLastLogTime = CFAbsoluteTimeGetCurrent()
-    private var debugRowsRebuilt = 0
-    private var debugRowsCached = 0
+    private(set) var debugRowsRebuilt = 0
+    private(set) var debugRowsCached = 0
 #endif
 #if DEBUG
     private var imageTextureFailures: Set<ObjectIdentifier> = []
@@ -693,7 +704,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func buildDrawData(scale: CGFloat) -> DrawData {
+    func buildDrawData(scale: CGFloat) -> DrawData {
         defer {
             grayscaleAtlas.frozen = false
             colorAtlas.frozen = false
@@ -837,10 +848,35 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
             let cacheValid = entry?.lineRef === line
                 && entry?.generation == lineGeneration
                 && entry?.bidiParagraphRevision == bidiParagraphRevision
-            let needsRebuild = needsFullRebuild ||
+            var needsRebuild = needsFullRebuild ||
                 (rebuildRange?.contains(row) ?? false) ||
                 !cacheValid ||
                 (bufferingMode == .perFrameAggregated && entry?.data == nil)
+            // A dirty row is often redrawn with exactly what it had: TUIs erase
+            // and rewrite their screen every frame, which moves the line's
+            // generation without changing a cell. Same cells and same
+            // decorations draw the same row, so keep the cached one. Checked on
+            // the raw cells, before any line info is built: building it to
+            // compare costs as much as the rebuild it would save.
+            //
+            // The BiDi revision hashes the generation of every line in the
+            // paragraph, so it moves on every rewrite. A row that is a paragraph
+            // by itself lays out from its own cells and BiDi state alone, both
+            // compared here; a wrapped paragraph still needs the revision.
+            if needsRebuild, !needsFullRebuild, let cached = entry,
+               cached.lineRef === line,
+               cached.bidiParagraphRevision == bidiParagraphRevision
+                || Self.isSingleRowParagraph(row: row, buffer: buffer),
+               !(bufferingMode == .perFrameAggregated && cached.data == nil),
+               let reuse = cached.reuse,
+               reuse.renderMode == line.renderMode,
+               reuse.bidiState == line.bidiState,
+               line.hasSameCells(as: reuse.cells),
+               reuse.decoration == terminalView.rowDecorationKey(row: row, line: line, cols: buffer.cols) {
+                entry?.generation = lineGeneration
+                rowCache[row] = entry
+                needsRebuild = false
+            }
             let rowBuffers: RowDrawBuffers?
             let rowData: RowDrawData
             if needsRebuild {
@@ -856,7 +892,9 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 let buffers = bufferingMode == .perRowPersistent ? makeRowBuffers(from: rowData) : nil
                 entry = RowCacheEntry(lineRef: line, generation: lineGeneration,
                                       bidiParagraphRevision: bidiParagraphRevision,
-                                      data: rowData, buffers: buffers)
+                                      data: rowData, buffers: buffers,
+                                      reuse: rowReuseKey(row: row, line: line, cols: buffer.cols,
+                                                         terminalView: terminalView))
                 rowCache[row] = entry
                 rowBuffers = buffers
                 rebuiltRows += 1
@@ -902,7 +940,9 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 let buffers = bufferingMode == .perRowPersistent ? makeRowBuffers(from: rowData) : nil
                 entry = RowCacheEntry(lineRef: line, generation: lineGeneration,
                                       bidiParagraphRevision: bidiParagraphRevision,
-                                      data: rowData, buffers: buffers)
+                                      data: rowData, buffers: buffers,
+                                      reuse: rowReuseKey(row: row, line: line, cols: buffer.cols,
+                                                         terminalView: terminalView))
                 rowCache[row] = entry
                 rowBuffers = buffers
                 rebuiltRows += 1
@@ -987,6 +1027,25 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
         }
         return (firstRow, lastRow, buffer.yDisp)
         #endif
+    }
+
+    /// Neither a continuation of the line above nor continued by the one below.
+    private static func isSingleRowParagraph(row: Int, buffer: Buffer) -> Bool {
+        !buffer.lines[row].isWrapped
+            && (row + 1 >= buffer.lines.count || !buffer.lines[row + 1].isWrapped)
+    }
+
+    /// The reuse key for a row just built, or nil when something outside the
+    /// line decides how it draws: inline images, or kitty placements that
+    /// placeholder cells refer to.
+    private func rowReuseKey(row: Int, line: BufferLine, cols: Int,
+                             terminalView: TerminalView) -> RowReuseKey? {
+        guard line.images?.isEmpty ?? true,
+              terminalView.terminal.kittyGraphicsState.placementsByKey.isEmpty else { return nil }
+        return RowReuseKey(cells: line.cellSnapshot(),
+                           renderMode: line.renderMode,
+                           bidiState: line.bidiState,
+                           decoration: terminalView.rowDecorationKey(row: row, line: line, cols: cols))
     }
 
     private func buildRowDrawData(row: Int,

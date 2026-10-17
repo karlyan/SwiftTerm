@@ -338,6 +338,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // of attributes for an NSAttributedString
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
+    /// Bumped whenever the attribute caches above are cleared (colors or fonts
+    /// changed); see `RowDecorationKey`.
+    var attributeEpoch: UInt64 = 0
     
     
     // Cache for the colors in the 0..255 range

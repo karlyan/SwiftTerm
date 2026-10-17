@@ -339,6 +339,13 @@ public struct CharData: CustomDebugStringConvertible {
     
     /// The color and character attributes for the cell
     public var attribute: Attribute
+
+    /// Whether this cell holds exactly what `other` does. Field by field: the
+    /// struct has a padding byte, so comparing raw bytes also compares garbage.
+    func sameContent(as other: CharData) -> Bool {
+        code == other.code && width == other.width && payload.code == other.payload.code
+            && semanticContentCode == other.semanticContentCode && attribute == other.attribute
+    }
     
     /// Initializes a new instance of the CharData structure with the provided attribute and code.
     /// Use `Terminal.makeCharData` for Character-based construction.

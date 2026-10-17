@@ -76,6 +76,22 @@ public final class BufferLine: CustomDebugStringConvertible {
     @inline(__always)
     private func bump() { generation &+= 1 }
 
+    /// A copy of the cells, for renderers that cache per-line output: rewriting a
+    /// line with what it already had moves `generation` but leaves
+    /// `hasSameCells(as:)` true.
+    func cellSnapshot() -> ContiguousArray<CharData> {
+        ContiguousArray(data[0..<dataSize])
+    }
+
+    /// Whether the cells hold what `snapshot` does.
+    func hasSameCells(as snapshot: ContiguousArray<CharData>) -> Bool {
+        guard snapshot.count == dataSize else { return false }
+        for i in 0..<dataSize where !data[i].sameContent(as: snapshot[i]) {
+            return false
+        }
+        return true
+    }
+
     public init (cols: Int, fillData: CharData? = nil, isWrapped: Bool = false,
                  bidiState: BidiPresentationState = .default)
     {
